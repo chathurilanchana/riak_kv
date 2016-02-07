@@ -84,7 +84,8 @@ local_client(ClientId) ->
 %% @spec client_connect(Node :: node())
 %%        -> {ok, Client :: riak_client()} | {error, timeout}
 %% @equiv client_connect(Node, undefined)
-client_connect(Node) -> 
+client_connect(Node) ->
+    lager:error("good girl"),
     client_connect(Node, undefined).
 
 %% @spec client_connect(node(), binary()|undefined)
