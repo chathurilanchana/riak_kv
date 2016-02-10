@@ -1,3 +1,5 @@
+Causal Consistency on Riak KV
+
 * riak_kv
 ** Overview
 
