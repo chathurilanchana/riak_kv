@@ -33,7 +33,7 @@
          local_get/2,
          local_put/2,
          local_put/3,
-         coord_put/6,
+         coord_put/7,
          readrepair/6,
          list_keys/4,
          fold/3,
@@ -132,6 +132,7 @@
          }).
 
 -record(state, {idx :: partition(),
+               max_ts::non_neg_integer(),
                 mod :: module(),
                 async_put :: boolean(),
                 modstate :: term(),
@@ -320,15 +321,16 @@ refresh_index_data(Partition, BKey, IdxData, TimeOut) ->
 
 %% Issue a put for the object to the preflist, expecting a reply
 %% to an FSM.
-coord_put(IndexNode, BKey, Obj, ReqId, StartTime, Options) when is_integer(StartTime) ->
-    coord_put(IndexNode, BKey, Obj, ReqId, StartTime, Options, {fsm, undefined, self()}).
+coord_put(IndexNode, BKey, Obj,Clock, ReqId, StartTime, Options) when is_integer(StartTime) ->
+    coord_put(IndexNode, BKey, Obj,Clock, ReqId, StartTime, Options, {fsm, undefined, self()}).
 
-coord_put(IndexNode, BKey, Obj, ReqId, StartTime, Options, Sender)
+coord_put(IndexNode, BKey, Obj,Clock, ReqId, StartTime, Options, Sender)
   when is_integer(StartTime) ->
     riak_core_vnode_master:command(IndexNode,
                                    ?KV_PUT_REQ{
                                       bkey = sanitize_bkey(BKey),
                                       object = Obj,
+                                       clock = Clock,
                                       req_id = ReqId,
                                       start_time = StartTime,
                                       options = [coord | Options]},
@@ -484,6 +486,7 @@ init([Index]) ->
                     false
             end,
             State = #state{idx=Index,
+                           max_ts =0,
                            async_folding=AsyncFolding,
                            mod=Mod,
                            async_put = DoAsyncPut,
@@ -547,16 +550,25 @@ handle_overload_info({raw_forward_get, _, From}, _Idx) ->
 handle_overload_info(_, _) ->
     ok.
 
+%when replication is added, local_put of coord should send an identifier,coz only it should calculate the MaxTS and send it
 handle_command(?KV_PUT_REQ{bkey=BKey,
                            object=Object,
+                           clock = Clock,
                            req_id=ReqId,
                            start_time=StartTime,
                            options=Options},
-               Sender, State=#state{idx=Idx}) ->
-    lager:error("put received"),
+               Sender, State=#state{idx=Idx,max_ts = MaxTS}) ->
     StartTS = os:timestamp(),
-    riak_core_vnode:reply(Sender, {w, Idx, ReqId}),
-    {_Reply, UpdState} = do_put(Sender, BKey,  Object, ReqId, StartTime, Options, State),
+    PhysicalTS=riak_kv_util:get_timestamp(),
+    lager:info("timestamps are startts ~p maxts ~p clock ~p ~n",[StartTS,MaxTS,Clock]),
+    MaxTS0=max(Clock+1,max(PhysicalTS,MaxTS+1)), %retrieve the hybrid clock
+    lager:info("put received and maxts is ~p ~n",[MaxTS0]),
+
+    %decide whether we add the label now or at the fsm
+
+    riak_core_vnode:reply(Sender, {w, Idx, ReqId,MaxTS0}), %reply with hybrid clock at server
+    StateNew=State#state{max_ts = MaxTS0},
+    {_Reply, UpdState} = do_put(Sender, BKey,  Object, ReqId, StartTime, Options, StateNew),
     update_vnode_stats(vnode_put, Idx, StartTS),
     {noreply, UpdState};
 
@@ -843,7 +855,7 @@ handle_command({get_index_entries, Opts},
 %% NB. The following two function clauses discriminate on the async_put State field
 handle_command(?KV_W1C_PUT_REQ{bkey={Bucket, Key}, encoded_obj=EncodedVal, type=Type},
                 From, State=#state{mod=Mod, async_put=true, modstate=ModState}) ->
-    lager:error("receive WIC put"),
+    lager:info("receive WIC put"),
     StartTS = os:timestamp(),
     Context = {w1c_async_put, From, Type, Bucket, Key, EncodedVal, StartTS},
     case Mod:async_put(Context, Bucket, Key, EncodedVal, ModState) of
@@ -855,7 +867,7 @@ handle_command(?KV_W1C_PUT_REQ{bkey={Bucket, Key}, encoded_obj=EncodedVal, type=
 
 handle_command(?KV_W1C_PUT_REQ{bkey={Bucket, Key}, encoded_obj=EncodedVal, type=Type},
                 _From, State=#state{idx=Idx, mod=Mod, async_put=false, modstate=ModState}) ->
-    lager:error("handle WIC put~p",[10]),
+    lager:info("handle WIC put~p",[10]),
     StartTS = os:timestamp(),
     case Mod:put(Bucket, Key, [], EncodedVal, ModState) of
         {ok, UpModState} ->

@@ -25,8 +25,8 @@
 -module(riak_client).
 
 -export([new/2]).
--export([get/3,get/4,get/5]).
--export([put/2,put/3,put/4,put/5,put/6]).
+-export([get/4,get/5,get/6]).
+-export([put/3,put/4,put/5,put/6,put/7]).
 -export([delete/3,delete/4,delete/5]).
 -export([delete_vclock/4,delete_vclock/5,delete_vclock/6]).
 -export([list_keys/2,list_keys/3,list_keys/4]).
@@ -77,18 +77,19 @@ new(Node, ClientId) ->
 %% @doc Fetch the object at Bucket/Key.  Return a value as soon as the default
 %%      R-value for the nodes have responded with a value or error.
 %% @equiv get(Bucket, Key, R, default_timeout())
-get(Bucket, Key, {?MODULE, [_Node, _ClientId]}=THIS) ->
-    get(Bucket, Key, [], THIS).
+get(Bucket, Key,MaxTS, {?MODULE, [_Node, _ClientId]}=THIS) ->
+    %lager:info("get without options hitted"),
+    get(Bucket, Key,MaxTS, [], THIS).
 
-normal_get(Bucket, Key, Options, {?MODULE, [Node, _ClientId]}) ->
+normal_get(Bucket, Key,MaxTS, Options, {?MODULE, [Node, _ClientId]}) ->
     Me = self(),
     ReqId = mk_reqid(),
     case node() of
         Node ->
-            riak_kv_get_fsm:start_link({raw, ReqId, Me}, Bucket, Key, Options);
+            riak_kv_get_fsm:start_link({raw, ReqId, Me}, Bucket, Key,MaxTS, Options);
         _ ->
             proc_lib:spawn_link(Node, riak_kv_get_fsm, start_link,
-                                [{raw, ReqId, Me}, Bucket, Key, Options])
+                                [{raw, ReqId, Me}, Bucket, Key,MaxTS, Options])
     end,
     %% TODO: Investigate adding a monitor here and eliminating the timeout.
     Timeout = recv_timeout(Options),
@@ -139,12 +140,12 @@ maybe_update_consistent_stat(Node, Stat, Bucket, StartTS, Result) ->
 %%       {error, Err :: term()}
 %% @doc Fetch the object at Bucket/Key.  Return a value as soon as R-value for the nodes
 %%      have responded with a value or error.
-get(Bucket, Key, Options, {?MODULE, [Node, _ClientId]}=THIS) when is_list(Options) ->
+get(Bucket, Key,MaxTS, Options, {?MODULE, [Node, _ClientId]}=THIS) when is_list(Options) ->
     case consistent_object(Node, Bucket) of
         true ->
             consistent_get(Bucket, Key, Options, THIS);
         false ->
-            normal_get(Bucket, Key, Options, THIS);
+            normal_get(Bucket, Key,MaxTS, Options, THIS);%we are only handling causal gets
         {error,_}=Err ->
             Err
     end;
@@ -159,8 +160,10 @@ get(Bucket, Key, Options, {?MODULE, [Node, _ClientId]}=THIS) when is_list(Option
 %% @doc Fetch the object at Bucket/Key.  Return a value as soon as R
 %%      nodes have responded with a value or error.
 %% @equiv get(Bucket, Key, R, default_timeout())
-get(Bucket, Key, R, {?MODULE, [_Node, _ClientId]}=THIS) ->
-    get(Bucket, Key, [{r, R}], THIS).
+
+%%This method is called by riak_client in basho bench. For now we are only modifying this
+get(Bucket, Key,MaxTS, R, {?MODULE, [_Node, _ClientId]}=THIS) ->
+    get(Bucket, Key,MaxTS, [{r, R}], THIS).
 
 %% @spec get(riak_object:bucket(), riak_object:key(), R :: integer(),
 %%           TimeoutMillisecs :: integer(), riak_client()) ->
@@ -172,11 +175,12 @@ get(Bucket, Key, R, {?MODULE, [_Node, _ClientId]}=THIS) ->
 %%       {error, Err :: term()}
 %% @doc Fetch the object at Bucket/Key.  Return a value as soon as R
 %%      nodes have responded with a value or error, or TimeoutMillisecs passes.
-get(Bucket, Key, R, Timeout, {?MODULE, [_Node, _ClientId]}=THIS) when
+get(Bucket, Key,MaxTS, R, Timeout, {?MODULE, [_Node, _ClientId]}=THIS) when
                                   (is_binary(Bucket) orelse is_tuple(Bucket)),
                                   is_binary(Key),
                                   (is_atom(R) or is_integer(R)),
                                   is_integer(Timeout) ->
+    lager:info("get with timeout hitted ~p ~n",[MaxTS]),
     get(Bucket, Key, [{r, R}, {timeout, Timeout}], THIS).
 
 
@@ -189,31 +193,31 @@ get(Bucket, Key, R, Timeout, {?MODULE, [_Node, _ClientId]}=THIS) when
 %%      Return as soon as the default W value number of nodes for this bucket
 %%      nodes have received the request.
 %% @equiv put(RObj, [])
-put(RObj, {?MODULE, [_Node, _ClientId]}=THIS) ->
-    lager:error("put called"),
-    put(RObj, [], THIS).
+put(RObj,MaxTS, {?MODULE, [_Node, _ClientId]}=THIS) ->
+    lager:info("put called"),
+    put(RObj,MaxTS, [], THIS).
 
 
-normal_put(RObj, Options, {?MODULE, [Node, ClientId]}) ->
+normal_put(RObj,MaxTS, Options, {?MODULE, [Node, ClientId]}) ->
     Me = self(),
     ReqId = mk_reqid(),
     case ClientId of
         undefined ->
             case node() of
                 Node ->
-                    riak_kv_put_fsm:start_link({raw, ReqId, Me}, RObj, Options);
+                    riak_kv_put_fsm:start_link({raw, ReqId, Me}, RObj,MaxTS, Options);
                 _ ->
                     proc_lib:spawn_link(Node, riak_kv_put_fsm, start_link,
-                                        [{raw, ReqId, Me}, RObj, Options])
+                                        [{raw, ReqId, Me}, RObj,MaxTS, Options])
             end;
         _ ->
             UpdObj = riak_object:increment_vclock(RObj, ClientId),
             case node() of
                 Node ->
-                    riak_kv_put_fsm:start_link({raw, ReqId, Me}, UpdObj, [asis|Options]);
+                    riak_kv_put_fsm:start_link({raw, ReqId, Me}, UpdObj,MaxTS, [asis|Options]);
                 _ ->
                     proc_lib:spawn_link(Node, riak_kv_put_fsm, start_link,
-                                        [{raw, ReqId, Me}, RObj, [asis|Options]])
+                                        [{raw, ReqId, Me}, RObj,MaxTS, [asis|Options]])
             end
     end,
     %% TODO: Investigate adding a monitor here and eliminating the timeout.
@@ -274,12 +278,12 @@ consistent_put_type(RObj, Options) ->
 %%       {error, Err :: term()} |
 %%       {error, Err :: term(), details()}
 %% @doc Store RObj in the cluster.
-put(RObj, Options, {?MODULE, [Node, _ClientId]}=THIS) when is_list(Options) ->
+put(RObj,MaxTS, Options, {?MODULE, [Node, _ClientId]}=THIS) when is_list(Options) ->
     case consistent_object(Node, riak_object:bucket(RObj)) of
         true ->
             consistent_put(RObj, Options, THIS);
         false ->
-            maybe_normal_put(RObj, Options, THIS);
+            maybe_normal_put(RObj, MaxTS,Options, THIS);
         {error,_}=Err ->
             Err
     end;
@@ -292,7 +296,7 @@ put(RObj, Options, {?MODULE, [Node, _ClientId]}=THIS) when is_list(Options) ->
 %% @doc Store RObj in the cluster.
 %%      Return as soon as at least W nodes have received the request.
 %% @equiv put(RObj, [{w, W}, {dw, W}])
-put(RObj, W, {?MODULE, [_Node, _ClientId]}=THIS) -> put(RObj, [{w, W}, {dw, W}], THIS).
+put(RObj,MaxTS, W, {?MODULE, [_Node, _ClientId]}=THIS) -> put(RObj, MaxTS,[{w, W}, {dw, W}], THIS).
 
 %% @spec put(RObj::riak_object:riak_object(),W :: integer(),RW :: integer(), riak_client()) ->
 %%        ok |
@@ -303,7 +307,7 @@ put(RObj, W, {?MODULE, [_Node, _ClientId]}=THIS) -> put(RObj, [{w, W}, {dw, W}],
 %%      Return as soon as at least W nodes have received the request, and
 %%      at least DW nodes have stored it in their storage backend.
 %% @equiv put(Robj, W, DW, default_timeout())
-put(RObj, W, DW, {?MODULE, [_Node, _ClientId]}=THIS) -> put(RObj, [{w, W}, {dw, DW}], THIS).
+put(RObj,MaxTS,W, DW, {?MODULE, [_Node, _ClientId]}=THIS) -> put(RObj,MaxTS, [{w, W}, {dw, DW}], THIS).
 
 %% @spec put(RObj::riak_object:riak_object(), W :: integer(), RW :: integer(),
 %%           TimeoutMillisecs :: integer(), riak_client()) ->
@@ -315,8 +319,8 @@ put(RObj, W, DW, {?MODULE, [_Node, _ClientId]}=THIS) -> put(RObj, [{w, W}, {dw, 
 %%      Return as soon as at least W nodes have received the request, and
 %%      at least DW nodes have stored it in their storage backend, or
 %%      TimeoutMillisecs passes.
-put(RObj, W, DW, Timeout, {?MODULE, [_Node, _ClientId]}=THIS) ->
-    put(RObj,  [{w, W}, {dw, DW}, {timeout, Timeout}], THIS).
+put(RObj,MaxTS,W, DW, Timeout, {?MODULE, [_Node, _ClientId]}=THIS) ->
+    put(RObj, MaxTS, [{w, W}, {dw, DW}, {timeout, Timeout}], THIS).
 
 %% @spec put(RObj::riak_object:riak_object(), W :: integer(), RW :: integer(),
 %%           TimeoutMillisecs :: integer(), Options::list(), riak_client()) ->
@@ -328,15 +332,15 @@ put(RObj, W, DW, Timeout, {?MODULE, [_Node, _ClientId]}=THIS) ->
 %%      Return as soon as at least W nodes have received the request, and
 %%      at least DW nodes have stored it in their storage backend, or
 %%      TimeoutMillisecs passes.
-put(RObj, W, DW, Timeout, Options, {?MODULE, [_Node, _ClientId]}=THIS) ->
-    put(RObj, [{w, W}, {dw, DW}, {timeout, Timeout} | Options], THIS).
+put(RObj,MaxTS, W, DW, Timeout, Options, {?MODULE, [_Node, _ClientId]}=THIS) ->
+    put(RObj,MaxTS, [{w, W}, {dw, DW}, {timeout, Timeout} | Options], THIS).
 
-maybe_normal_put(RObj, Options, {?MODULE, [Node, _ClientId]}=THIS) when is_list(Options) ->
+maybe_normal_put(RObj,MaxTS, Options, {?MODULE, [Node, _ClientId]}=THIS) when is_list(Options) ->
     case write_once(Node, riak_object:bucket(RObj)) of
         true ->
-            write_once_put(Node, RObj, Options, THIS);
+            write_once_put(Node, RObj, Options, THIS);  %currently we do not support write once. No use for CC.
         false ->
-            normal_put(RObj, Options, THIS);
+            normal_put(RObj,MaxTS, Options, THIS);
         {error,_}=Err ->
             Err
     end.

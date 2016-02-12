@@ -47,6 +47,7 @@
          get_write_once/1,
          overload_reply/1,
          get_backend_config/3,
+         get_timestamp/0,
          is_modfun_allowed/2]).
 
 -include_lib("riak_kv_vnode.hrl").
@@ -456,6 +457,16 @@ is_modfun_allowed(Mod, _Fun) ->
         _ ->
             true
     end.
+
+
+%% ===================================================================
+%% Helpers for Causal Consistency Module
+%% ===================================================================
+
+
+get_timestamp()->
+    {MegaSecs, Secs, MicroSecs}=os:timestamp(),
+    (MegaSecs * 1000000 + Secs) * 1000000 + MicroSecs.
 
 
 %% ===================================================================
