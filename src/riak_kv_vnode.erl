@@ -78,12 +78,14 @@
 
 -export([handoff_data_encoding_method/0]).
 -export([set_vnode_forwarding/2]).
+-export([heartbeat/1]).
 
 -include_lib("riak_kv_vnode.hrl").
 -include_lib("riak_kv_index.hrl").
 -include_lib("riak_kv_map_phase.hrl").
 -include_lib("riak_core_pb.hrl").
 -include("riak_kv_types.hrl").
+-include("riak_kv_causal_service.hrl").
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -132,7 +134,10 @@
          }).
 
 -record(state, {idx :: partition(),
-               max_ts::non_neg_integer(),
+                max_ts::non_neg_integer(),
+                causal_service_reg_name::atom(),
+                causal_service_type::all_to_one | plum_tree | deterministic,
+                ordering_service_hb_freq::non_neg_integer(),
                 mod :: module(),
                 async_put :: boolean(),
                 modstate :: term(),
@@ -199,6 +204,12 @@
                   is_index=false :: boolean(), %% set if the b/end supports indexes
                   crdt_op = undefined :: undefined | term() %% if set this is a crdt operation
                  }).
+
+heartbeat(PrefList)->
+    riak_core_vnode_master:command(PrefList, {heartbeat}, {fsm, undefined, self()}, riak_kv_vnode_master).
+
+
+
 
 -spec maybe_create_hashtrees(state()) -> state().
 maybe_create_hashtrees(State) ->
@@ -485,8 +496,17 @@ init([Index]) ->
                 _ ->
                     false
             end,
+
+            %ordering service specific params
+            Causal_Service_Name=app_helper:get_env(riak_kv,gen_server_register_name),
+            Causal_Service_type=app_helper:get_env(riak_kv, gen_server_type),
+            Ordering_Service_Hb_Freq=app_helper:get_env(riak_kv, ordering_service_hb_freq),
+
             State = #state{idx=Index,
                            max_ts =0,
+                           causal_service_reg_name = Causal_Service_Name,
+                           causal_service_type = Causal_Service_type,
+                           ordering_service_hb_freq = Ordering_Service_Hb_Freq,
                            async_folding=AsyncFolding,
                            mod=Mod,
                            async_put = DoAsyncPut,
@@ -551,19 +571,36 @@ handle_overload_info(_, _) ->
     ok.
 
 %when replication is added, local_put of coord should send an identifier,coz only it should calculate the MaxTS and send it
+
+handle_command({heartbeat},_From,State=#state{max_ts = MaxTS, idx = Partition,
+    causal_service_reg_name =Causal_Service_Id,ordering_service_hb_freq = Hb_Frequency })->
+    Physical_Time=riak_kv_util:get_timestamp(),  %later change to current_monotonic_time()
+    Clock=max(Physical_Time,MaxTS),
+    if
+        MaxTS>Clock-Hb_Frequency ->
+            %lager:info("not sending heartbeat by ~p this time coz clock is ~p ~n",[Partition,Clock]),
+            riak_core_vnode:send_command_after(MaxTS+Hb_Frequency-Clock, {heartbeat}) ;  %has not sent a label since last heartbeat
+        true ->
+            %lager:info("sending heartbeat by ~p and clock is ~p ~n",[Partition,Clock]),
+            riak_kv_ordering_service:partition_heartbeat(Partition,Clock,Causal_Service_Id),
+            riak_core_vnode:send_command_after(Hb_Frequency, {heartbeat})
+    end,
+
+    {noreply,State#state{max_ts = Clock}};
+
 handle_command(?KV_PUT_REQ{bkey=BKey,
                            object=Object,
                            clock = Clock,
                            req_id=ReqId,
                            start_time=StartTime,
                            options=Options},
-               Sender, State=#state{idx=Idx,max_ts = MaxTS}) ->
+               Sender, State=#state{idx=Idx,max_ts = MaxTS,causal_service_reg_name = Causal_Service_Id}) ->
     StartTS = os:timestamp(),
-    PhysicalTS=riak_kv_util:get_timestamp(),
-    lager:info("timestamps are startts ~p maxts ~p clock ~p ~n",[StartTS,MaxTS,Clock]),
+    PhysicalTS=riak_kv_util:get_timestamp(),  %if not working change to current_monotonic_time()
     MaxTS0=max(Clock+1,max(PhysicalTS,MaxTS+1)), %retrieve the hybrid clock
-    lager:info("put received and maxts is ~p ~n",[MaxTS0]),
 
+    Label=riak_kv_causal_service_util:create_label(ReqId,BKey,MaxTS0,{Idx,node()}),
+    riak_kv_ordering_service:add_label(Label,Causal_Service_Id,Idx),
     %decide whether we add the label now or at the fsm
 
     riak_core_vnode:reply(Sender, {w, Idx, ReqId,MaxTS0}), %reply with hybrid clock at server

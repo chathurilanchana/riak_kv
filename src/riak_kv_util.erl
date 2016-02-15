@@ -48,6 +48,7 @@
          overload_reply/1,
          get_backend_config/3,
          get_timestamp/0,
+         current_monotonic_time/0,
          is_modfun_allowed/2]).
 
 -include_lib("riak_kv_vnode.hrl").
@@ -463,11 +464,14 @@ is_modfun_allowed(Mod, _Fun) ->
 %% Helpers for Causal Consistency Module
 %% ===================================================================
 
-
+% returns a may-be-non-monotonic timestamp
 get_timestamp()->
     {MegaSecs, Secs, MicroSecs}=os:timestamp(),
     (MegaSecs * 1000000 + Secs) * 1000000 + MicroSecs.
 
+current_monotonic_time()->
+    {MegaSecs, Secs, MicroSecs}=erlang:now(),  %we can avoid monotonicity for 1 to many ordering service
+    (MegaSecs * 1000000 + Secs) * 1000000 + MicroSecs.
 
 %% ===================================================================
 %% EUnit tests

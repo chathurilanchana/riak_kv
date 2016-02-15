@@ -149,7 +149,6 @@ test_link(From, Bucket, Key,MaxTS, GetOptions, StateProps) ->
 
 %% @private
 init([From, Bucket, Key,MaxTS, Options0, Monitor]) ->
-    lager:info("maxts at init is ~p ~n",[MaxTS]),
     StartNow = os:timestamp(),
     Options = proplists:unfold(Options0),
     StateData = #state{from = From,

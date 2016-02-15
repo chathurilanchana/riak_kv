@@ -59,6 +59,7 @@ get_app_env(Opt) -> get_app_env(Opt, undefined).
 %%      Will return Default if that option is unset.
 get_app_env(Opt, Default) ->
     case application:get_env(riak, Opt) of
+
         {ok, Val} -> Val;
     _ ->
         case init:get_argument(Opt) of
@@ -85,7 +86,6 @@ local_client(ClientId) ->
 %%        -> {ok, Client :: riak_client()} | {error, timeout}
 %% @equiv client_connect(Node, undefined)
 client_connect(Node) ->
-    lager:error("good girl"),
     client_connect(Node, undefined).
 
 %% @spec client_connect(node(), binary()|undefined)
