@@ -38,7 +38,7 @@ start_link() ->
     gen_server:start_link({global, ServerName}, ?MODULE, [ServerName], []).
 
 add_label(Label,Causal_Service_Id,Partition)->
-    lager:info("label is ready to add to the ordeing service  ~p",[Label]),
+    %lager:info("label is ready to add to the ordeing service  ~p",[Label]),
     gen_server:cast({global,Causal_Service_Id},{add_label,Label,Partition}).
 
 partition_heartbeat(Partition,Clock,Causal_Service_Id)->
@@ -63,8 +63,8 @@ init([ServerName]) ->
         riak_kv_vnode:heartbeat(PrefList),
         dict:store(Partition, 0, Dict)
                        end, dict:new(), GrossPrefLists),
-      lager:info("dictionary size is ~p ~n",[dict:size(Dict1)]),
-      {ok, #state{heartbeats = Dict1,labels = orddict:new(), reg_name = ServerName}}.
+    lager:info("dictionary size is ~p ~n",[dict:size(Dict1)]),
+    {ok, #state{heartbeats = Dict1,labels = orddict:new(), reg_name = ServerName}}.
 
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
@@ -74,7 +74,7 @@ handle_cast({add_label,Label,Partition},State=#state{labels = Labels,heartbeats 
     %Now=riak_kv_util:current_monotonic_time(),  %time we get at ord service should be monotonic
     lager:info("received label from ~p ~n",[Partition]),
     Label_Timestamp=Label#label.timestamp,
-    Labels1=orddict:append(Label_Timestamp,Label,Labels),  %filter by ts and decide to wait or deliver by Now
+    Labels1=orddict:append(Label_Timestamp,Label,Labels),
     Heartbeats1= dict:store(Partition,Label_Timestamp,Heartbeats),
 
     %todo: test functionality of only send heartbeats when no label has sent fix @ vnode
@@ -94,7 +94,7 @@ handle_cast({partition_heartbeat,Clock,Partition},State=#state{labels = Labels,h
     {noreply,State1};
 
 handle_cast(_Request, State) ->
-    lager:error("received an unexpected  message ~p ~n"),
+    lager:error("received an unexpected  message ~n"),
     {noreply, State}.
 
 handle_info(_Info, State) ->
@@ -126,16 +126,14 @@ get_stable_timestamp(Heartbeats)->
 
 deliver_labels(_Min_Clock,[],_Type)->[];
 
-deliver_labels(Min_Clock,Dict,Type)->
-    [Head|_Rest]=Dict,
+deliver_labels(Min_Clock,[Head|Rest],Type)->
     {Clock,List_Labels}=Head,
-   % lager:info("list label is ~p and min clock is ~p ~n",[List_Labels,Min_Clock]),
-    if
-        (Clock =< Min_Clock)->
-             lists:foreach(fun(Label)->lager:info("deleted label is ~p type is ~p ~n",[Label,Type]) end,List_Labels),%safe to deliver label to other side
-             Dict1=orddict:erase(Clock,Dict),%delete all labels with Clock
-             deliver_labels(Min_Clock,Dict1,Type);
-         true->_Dict1=Dict
+    %lager:info("list label is ~p and min clock is ~p ~n",[List_Labels,Min_Clock]),
+    case (Clock =< Min_Clock) of
+         true-> lists:foreach(fun(Label)->lager:info("deleted label is ~p type is ~p ~n",[Label,Type]) end,List_Labels),%safe to deliver label to other side
+             %Dict1=orddict:erase(Clock,Dict),%delete all labels with Clock
+             deliver_labels(Min_Clock,Rest,Type);
+         false->[Head|Rest]
     end.
 
 

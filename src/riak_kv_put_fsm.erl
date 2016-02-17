@@ -144,7 +144,6 @@ start_link(ReqId,RObj,MaxTS,W,DW,Timeout,ResultPid,Options) ->
     start_link({raw, ReqId, ResultPid}, RObj,MaxTS, [{w, W}, {dw, DW}, {timeout, Timeout} | Options]).
 
 start_link(From, Object,MaxTS, PutOptions) ->
-    lager:info("fsm link started"),
     case whereis(riak_kv_put_fsm_sj) of
         undefined ->
             %% Overload protection disabled
@@ -236,7 +235,6 @@ test_link(From, Object,MaxTS, PutOptions, StateProps) ->
 
 %% @private
 init([From, RObj,Clock, Options0, Monitor]) ->
-    lager:info("init put called with maxts ~p ~n",[Clock]),
     BKey = {Bucket, Key} = {riak_object:bucket(RObj), riak_object:key(RObj)},
     CoordTimeout = get_put_coordinator_failure_timeout(),
     Trace = app_helper:get_env(riak_kv, fsm_trace_enabled),

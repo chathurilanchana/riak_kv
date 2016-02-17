@@ -30,7 +30,7 @@
 
 -export([start_link/0]).
 -export([init/1]).
--export([start_ordering_service/0]).
+-export([start_ordering_service/0,stop_ordering_service/1]).
 
 -define (IF (Bool, A, B), if Bool -> A; true -> B end).
 
@@ -52,6 +52,9 @@ start_ordering_service()->
             permanent, 5000, worker, [riak_kv_ordering_service]});
         _->lager:info("This type of causal service is not defined ~p")
     end.
+
+stop_ordering_service(Pid)->
+    supervisor:terminate_child(?MODULE,Pid).
 
 
 
