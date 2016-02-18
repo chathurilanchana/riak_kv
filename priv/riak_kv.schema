@@ -668,10 +668,10 @@ end
 %% atom of all_to_one, plum_tree, deterministic
 {mapping, "gen_server_type", "riak_kv.gen_server_type", [
      {datatype, {enum, [all_to_one, plum_tree, deterministic]}},
-    {default, all_to_one}
+     {default, all_to_one}
 ]}.
 
 {mapping, "ordering_service_hb_freq", "riak_kv.ordering_service_hb_freq", [
     {datatype, integer},
-    {default, "6000"}
+    {default, "3000"}
 ]}.
