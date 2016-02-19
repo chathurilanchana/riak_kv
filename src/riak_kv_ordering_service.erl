@@ -76,7 +76,8 @@ init([ServerName]) ->
 
 
 handle_call({trigger},_From, State=#state{added = Added,deleted = Deleted,sum_delay = Delay}) ->
-    lager:info("added count is ~p deleted count is ~p sum delay is ~p delay-per-label is ~p ~n",[Added,Deleted,Delay,Delay/Deleted]),
+    Delay_Per_Op=Delay div Deleted,
+    lager:info("added count is ~p deleted count is ~p delay-per-op is ~p ~n",[Added,Deleted,Delay_Per_Op]),
     {reply,ok,State};
 
 handle_call(_Request, _From, State) ->
@@ -143,23 +144,22 @@ deliver_labels(Min_Clock,[Head|Rest],Deleted,Sum_Delay)->
     {Clock,List_Labels}=Head,
     %lager:info("list label is ~p and min clock is ~p ~n",[List_Labels,Min_Clock]),
     case (Clock =< Min_Clock) of
-         true-> {Deleted2,Sum_Delay1}=lists:foldl(fun(Label,Deleted1)->
-                                              %lager:info("deleted label is ~p type is ~p ~n",[Label,Type]),
+         true-> {Deleted2,Sum_Delay2}=lists:foldl(fun(Label,{Deleted1,Sum_Delay1})->
                                               %deliver labels to the other datacenters
-                                              Sum_Delay_Till_Now=calculate_sum_delay(Label#label.timestamp,Sum_Delay),
-                                              {Deleted1+1,Sum_Delay_Till_Now}
-                                     end,Deleted,List_Labels),
+                                              {Deleted1+1,calculate_sum_delay(Label#label.timestamp,Sum_Delay1)}
+                                     end,{Deleted,Sum_Delay},List_Labels),
                  %Dict1=orddict:erase(Clock,Dict),%delete all labels with Clock
-                 deliver_labels(Min_Clock,Rest,Deleted2,Sum_Delay1);
+                 deliver_labels(Min_Clock,Rest,Deleted2,Sum_Delay2);
          false->{[Head|Rest],Deleted,Sum_Delay}
     end.
 
 
 calculate_sum_delay(Added_Timestamp,Sum_Delay)->
                                                     Current_Time=riak_kv_util:get_timestamp(),
-                                                    Diff=Current_Time-Added_Timestamp,
-                                                    case (Diff>0) of
-                                                               true->Sum_Delay+Diff;
+                                                    Diff_in_Msec=(Current_Time-Added_Timestamp) div 1000,
+
+                                                    case (Diff_in_Msec>0) of
+                                                               true->(Sum_Delay+Diff_in_Msec);
                                                                false->Sum_Delay   %due to clock drifts or non monotonocity
                                                                end.
 
