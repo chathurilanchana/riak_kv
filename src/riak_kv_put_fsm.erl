@@ -348,7 +348,6 @@ prepare(timeout, StateData0 = #state{from = From, robj = RObj,clock = MaxTS,
                     try
                         {UseAckP, Options2} = make_ack_options(
                                                [{ack_execute, self()}|Options]),
-                         lager:info("trying to spawn a remote coz I'm not in the pref list ~n"),
                         MiddleMan = spawn_coordinator_proc(
                                       CoordNode, riak_kv_put_fsm, start_link,
                                       [From,RObj,MaxTS,Options2]),

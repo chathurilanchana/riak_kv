@@ -30,7 +30,7 @@
 -define(SERVER, ?MODULE).
 
 %delay- average delay between receiving and delivering a label
--record(state, {heartbeats,labels,reg_name,added,deleted,sum_delay}).
+-record(state, {heartbeats,labels,reg_name,added,deleted,sum_delay,highest_delay}).
 
 %%%===================================================================
 %%% API
@@ -72,38 +72,39 @@ init([ServerName]) ->
         dict:store(Partition, 0, Dict)
                        end, dict:new(), GrossPrefLists),
     lager:info("dictionary size is ~p ~n",[dict:size(Dict1)]),
-    {ok, #state{heartbeats = Dict1,labels = orddict:new(), reg_name = ServerName,added = 0,deleted = 0,sum_delay = 0}}.
+    {ok, #state{heartbeats = Dict1,labels = orddict:new(), reg_name = ServerName,added = 0,deleted = 0,sum_delay = 0,highest_delay = 0}}.
 
 
-handle_call({trigger},_From, State=#state{added = Added,deleted = Deleted,sum_delay = Delay}) ->
+handle_call({trigger},_From, State=#state{added = Added,deleted = Deleted,sum_delay = Delay,highest_delay = Max_Delay}) ->
     Delay_Per_Op=Delay div Deleted,
-    lager:info("added count is ~p deleted count is ~p delay-per-op is ~p ~n",[Added,Deleted,Delay_Per_Op]),
+    lager:info("added count is ~p deleted count is ~p delay-per-op is ~p max-delay is ~p ~n",[Added,Deleted,Delay_Per_Op,Max_Delay]),
     {reply,ok,State};
 
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
 
-handle_cast({add_label,Label,Partition},State=#state{labels = Labels,heartbeats = Heartbeats,added = Added,deleted = Deleted,sum_delay = Sum_Delay})->
+handle_cast({add_label,Label,Partition},State=#state{labels = Labels,heartbeats = Heartbeats,added = Added,deleted = Deleted,sum_delay = Sum_Delay,highest_delay = Max_Delay})->
     %lager:info("received label from ~p ~n",[Partition]),
     Label_Timestamp=Label#label.timestamp,
     Labels1=orddict:append(Label_Timestamp,Label,Labels),
     Heartbeats1= dict:store(Partition,Label_Timestamp,Heartbeats),
-
+    Max_Delay1=get_max_delay(Labels,Max_Delay),
     %todo: test functionality of only send heartbeats when no label has sent fix @ vnode
     {Labels2,Deleted1,Sum_Delay1}=deliver_possible_labels(Labels1,Heartbeats1,Deleted,Sum_Delay),
 
-    State1=State#state{labels = Labels2,heartbeats = Heartbeats1,added = Added+1,deleted = Deleted1,sum_delay = Sum_Delay1},
+    State1=State#state{labels = Labels2,heartbeats = Heartbeats1,added = Added+1,deleted = Deleted1,sum_delay = Sum_Delay1,highest_delay = Max_Delay1},
 
     %lager:info("Label ~p and heartbeat is ~p",[orddict:fetch(Label_Timestamp,Labels1),dict:fetch(Partition,Heartbeats1)]),
     {noreply,State1};
 
-handle_cast({partition_heartbeat,Clock,Partition},State=#state{labels = Labels,heartbeats = Heartbeats,deleted = Deleted,sum_delay = Sum_Delay})->
+handle_cast({partition_heartbeat,Clock,Partition},State=#state{labels = Labels,heartbeats = Heartbeats,deleted = Deleted,sum_delay = Sum_Delay,highest_delay = Max_Delay})->
     %lager:info("received heartbeat from partition ~p and clock of it is ~p",[Partition,Clock]),
     Heartbeats1=dict:store(Partition,Clock,Heartbeats),
+    Max_Delay1=get_max_delay(Labels,Max_Delay),
     {Labels1,Deleted1,Sum_Delay1}= deliver_possible_labels(Labels,Heartbeats1,Deleted,Sum_Delay),
     %lager:info("remaining elements in dictionary is ~p ~n",[orddict:size(Labels1)]),
-    State1=State#state{labels = Labels1,heartbeats = Heartbeats1,deleted = Deleted1,sum_delay = Sum_Delay1},
+    State1=State#state{labels = Labels1,heartbeats = Heartbeats1,deleted = Deleted1,sum_delay = Sum_Delay1,highest_delay = Max_Delay1},
     {noreply,State1};
 
 handle_cast(_Request, State) ->
@@ -126,6 +127,33 @@ code_change(_OldVsn, State, _Extra) ->
 deliver_possible_labels(Labels,Heartbeats,Deleted,Sum_Delay)->
     Min_Stable_Timestamp=get_stable_timestamp(Heartbeats),
     deliver_labels(Min_Stable_Timestamp,Labels,Deleted,Sum_Delay).
+
+get_max_delay(Labels,Current_Max_Delay)->
+
+    case(orddict:size(Labels)>0) of
+        true-> Earliest_Ts=get_earliest_label_timestamp(Labels,Current_Max_Delay),
+               New_Max_Delay=riak_kv_util:get_timestamp()-Earliest_Ts,
+
+               case(New_Max_Delay>Current_Max_Delay) of
+                    true->New_Max_Delay;
+                    false->Current_Max_Delay
+               end;
+         false->Current_Max_Delay
+    end.
+
+get_earliest_label_timestamp([],Current_Max_Delay)->Current_Max_Delay;
+
+get_earliest_label_timestamp(Labels,_Current_Max_Delay)->
+    HB_List=orddict:to_list(Labels),
+    [First|Rest]=HB_List,
+    {Clock,_Label}=First,
+    lists:foldl(fun({Key,_Val},Min)->
+        %lager:info("key is ~p value is ~p ~n",[Key,Val]),
+        if
+            Key<Min-> Key;
+            true -> Min
+        end end,Clock,Rest).
+
 
 get_stable_timestamp(Heartbeats)->
     HB_List=dict:to_list(Heartbeats),
