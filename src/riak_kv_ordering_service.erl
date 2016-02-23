@@ -30,7 +30,7 @@
 -define(SERVER, ?MODULE).
 
 %delay- average delay between receiving and delivering a label
--record(state, {heartbeats,labels,reg_name,added,deleted,sum_delay,highest_delay}).
+-record(state, {heartbeats,labels,reg_name,added,deleted,sum_delay,highest_delay,stat_file_name}).
 
 %%%===================================================================
 %%% API
@@ -62,8 +62,7 @@ init([ServerName]) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     Num_Partitions=riak_core_ring:num_partitions(Ring),
     lager:info("total partitions are ~p and server name is ~p",[Num_Partitions,ServerName]),
-
-    %Delay=app_helper:get_env(riak_kv, causal_service_delay),  % later use to get delay
+    File_Name=app_helper:get_env(riak_kv, stat_name),  % later use to get delay
 
     GrossPrefLists = riak_core_ring:all_preflists(Ring, 1),
     Dict1 = lists:foldl(fun(PrefList, Dict) ->
@@ -72,7 +71,8 @@ init([ServerName]) ->
         dict:store(Partition, 0, Dict)
                        end, dict:new(), GrossPrefLists),
     lager:info("dictionary size is ~p ~n",[dict:size(Dict1)]),
-    {ok, #state{heartbeats = Dict1,labels = orddict:new(), reg_name = ServerName,added = 0,deleted = 0,sum_delay = 0,highest_delay = 0}}.
+    erlang:send_after(10000, self(), print_stats),
+    {ok, #state{heartbeats = Dict1,labels = orddict:new(), reg_name = ServerName,added = 0,deleted = 0,sum_delay = 0,highest_delay = 0,stat_file_name = File_Name}}.
 
 
 handle_call({trigger},_From, State=#state{added = Added,deleted = Deleted,sum_delay = Delay,highest_delay = Max_Delay}) ->
@@ -110,6 +110,18 @@ handle_cast({partition_heartbeat,Clock,Partition},State=#state{labels = Labels,h
 handle_cast(_Request, State) ->
     lager:error("received an unexpected  message ~n"),
     {noreply, State}.
+
+handle_info(print_stats, State=#state{added = Added,deleted = Deleted,highest_delay = Max_Delay,stat_file_name = _FileName}) ->
+    {_,{Hour,Min,Sec}} = erlang:localtime(),
+    case (State#state.deleted>0) of
+        true->
+              %add_line_to_file(Added,Deleted,Max_Delay,FileName);
+              lager:info("timestamp ~p: ~p: ~p: added ~p deleted ~p max-delay ~p ~n",[Hour,Min,Sec,Added,Deleted,Max_Delay]);
+        false->%add_line_to_file(Added,0,Max_Delay,FileName)
+            lager:info("timestamp ~p: ~p: ~p: added ~p deleted ~p max-delay ~p ~n",[Hour,Min,Sec,Added,0,Max_Delay])
+    end,
+    erlang:send_after(10000, self(), print_stats),
+    {noreply, State};
 
 
 handle_info(_Info, State) ->
@@ -190,6 +202,23 @@ calculate_sum_delay(Added_Timestamp,Sum_Delay)->
                                                                true->(Sum_Delay+Diff_in_Msec);
                                                                false->Sum_Delay   %due to clock drifts or non monotonocity
                                                                end.
+
+
+%add_line_to_file(Added,Deleted,Max_Delay,FilePath)->
+%    Filename=FilePath++"/stat.txt",
+ %   {_,{Hour,Min,Sec}} = erlang:localtime(),
+ %   case file:read_file_info(Filename) of
+ %       {error, enoent} ->
+            %    file:write_file("test.txt", io_lib:fwrite("~p.\n",[20]));  % create the file and write
+   %         {ok, IODevice} = file:open(Filename, [write]),
+   %         file:write(IODevice,  io_lib:fwrite("timestamp ~p: ~p: ~p added ~p deleted ~p max-delay ~p. \n",[Hour,Min,Sec,Added,Deleted,Max_Delay])),
+    %        file:close(IODevice);
+
+    %    {ok, _FileInfo} ->
+     %       {ok, IODevice} = file:open(Filename, [append]),io_lib:fwrite("timestamp ~p: ~p: ~p added ~p deleted ~p max-delay ~p. \n",[Hour,Min,Sec,Added,Deleted,Max_Delay]),
+     %       file:close(IODevice)
+        %file:write_file("test.txt", io_lib:fwrite("~p.\n",[10]),[append]) % append data to existing file
+    %end.
 
 %test label delivery
 ordered_dict_test()->

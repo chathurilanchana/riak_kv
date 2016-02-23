@@ -675,3 +675,7 @@ end
     {datatype, integer},
     {default, "3000"}
 ]}.
+{mapping, "stat_name", "riak_kv.stat_name", [
+  {datatype, directory},
+  {default, "/home/chathuri"}
+]}.
