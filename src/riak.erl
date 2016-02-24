@@ -59,7 +59,6 @@ get_app_env(Opt) -> get_app_env(Opt, undefined).
 %%      Will return Default if that option is unset.
 get_app_env(Opt, Default) ->
     case application:get_env(riak, Opt) of
-
         {ok, Val} -> Val;
     _ ->
         case init:get_argument(Opt) of
@@ -85,7 +84,7 @@ local_client(ClientId) ->
 %% @spec client_connect(Node :: node())
 %%        -> {ok, Client :: riak_client()} | {error, timeout}
 %% @equiv client_connect(Node, undefined)
-client_connect(Node) ->
+client_connect(Node) -> 
     client_connect(Node, undefined).
 
 %% @spec client_connect(node(), binary()|undefined)
@@ -191,9 +190,8 @@ client_test_phase1(Client) ->
 client_test_phase2(Client, Object0) ->
     Now = calendar:universal_time(),
     Object = riak_object:update_value(Object0, Now),
-    case Client:put(Object,1) of
-        {ok,Timestamp} ->
-            io:format("Wrote the value with timestamp ~p ~n",[Timestamp]),
+    case Client:put(Object, 1) of
+        ok ->
             client_test_phase3(Client, Now);
         Error ->
             io:format("Failed to write test value: ~p", [Error]),

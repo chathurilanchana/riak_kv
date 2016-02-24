@@ -33,7 +33,7 @@
          local_get/2,
          local_put/2,
          local_put/3,
-         coord_put/7,
+         coord_put/6,
          readrepair/6,
          list_keys/4,
          fold/3,
@@ -78,14 +78,12 @@
 
 -export([handoff_data_encoding_method/0]).
 -export([set_vnode_forwarding/2]).
--export([heartbeat/1]).
 
 -include_lib("riak_kv_vnode.hrl").
 -include_lib("riak_kv_index.hrl").
 -include_lib("riak_kv_map_phase.hrl").
 -include_lib("riak_core_pb.hrl").
 -include("riak_kv_types.hrl").
--include("riak_kv_causal_service.hrl").
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -134,11 +132,8 @@
          }).
 
 -record(state, {idx :: partition(),
-                max_ts::non_neg_integer(),
-                causal_service_reg_name::atom(),
-                causal_service_type::all_to_one | plum_tree | deterministic,
-                ordering_service_hb_freq::non_neg_integer(),
                 mod :: module(),
+                sequencer_name::atom(),
                 async_put :: boolean(),
                 modstate :: term(),
                 mrjobs :: term(),
@@ -204,12 +199,6 @@
                   is_index=false :: boolean(), %% set if the b/end supports indexes
                   crdt_op = undefined :: undefined | term() %% if set this is a crdt operation
                  }).
-
-heartbeat(PrefList)->
-    riak_core_vnode_master:command(PrefList, {heartbeat}, {fsm, undefined, self()}, riak_kv_vnode_master).
-
-
-
 
 -spec maybe_create_hashtrees(state()) -> state().
 maybe_create_hashtrees(State) ->
@@ -332,16 +321,15 @@ refresh_index_data(Partition, BKey, IdxData, TimeOut) ->
 
 %% Issue a put for the object to the preflist, expecting a reply
 %% to an FSM.
-coord_put(IndexNode, BKey, Obj,Clock, ReqId, StartTime, Options) when is_integer(StartTime) ->
-    coord_put(IndexNode, BKey, Obj,Clock, ReqId, StartTime, Options, {fsm, undefined, self()}).
+coord_put(IndexNode, BKey, Obj, ReqId, StartTime, Options) when is_integer(StartTime) ->
+    coord_put(IndexNode, BKey, Obj, ReqId, StartTime, Options, {fsm, undefined, self()}).
 
-coord_put(IndexNode, BKey, Obj,Clock, ReqId, StartTime, Options, Sender)
+coord_put(IndexNode, BKey, Obj, ReqId, StartTime, Options, Sender)
   when is_integer(StartTime) ->
     riak_core_vnode_master:command(IndexNode,
                                    ?KV_PUT_REQ{
                                       bkey = sanitize_bkey(BKey),
                                       object = Obj,
-                                       clock = Clock,
                                       req_id = ReqId,
                                       start_time = StartTime,
                                       options = [coord | Options]},
@@ -467,6 +455,7 @@ init([Index]) ->
     KeyBufSize = app_helper:get_env(riak_kv, key_buffer_size, 100),
     WorkerPoolSize = app_helper:get_env(riak_kv, worker_pool_size, 10),
     UseEpochCounter = app_helper:get_env(riak_kv, use_epoch_counter, true),
+    ServerName=app_helper:get_env(riak_kv,sequencer_register_name),
     %%  This _has_ to be a non_neg_integer(), and really, if it is
     %%  zero, you are fsyncing every.single.key epoch.
     CounterLeaseSize = min(?MAX_CNTR_LEASE,
@@ -496,18 +485,9 @@ init([Index]) ->
                 _ ->
                     false
             end,
-
-            %ordering service specific params
-            Causal_Service_Name=app_helper:get_env(riak_kv,gen_server_register_name),
-            Causal_Service_type=app_helper:get_env(riak_kv, gen_server_type),
-            Ordering_Service_Hb_Freq=app_helper:get_env(riak_kv, ordering_service_hb_freq),
-
             State = #state{idx=Index,
-                           max_ts =0,
-                           causal_service_reg_name = Causal_Service_Name,
-                           causal_service_type = Causal_Service_type,
-                           ordering_service_hb_freq = Ordering_Service_Hb_Freq,
                            async_folding=AsyncFolding,
+                           sequencer_name = ServerName,
                            mod=Mod,
                            async_put = DoAsyncPut,
                            modstate=ModState,
@@ -570,42 +550,16 @@ handle_overload_info({raw_forward_get, _, From}, _Idx) ->
 handle_overload_info(_, _) ->
     ok.
 
-%when replication is added, local_put of coord should send an identifier,coz only it should calculate the MaxTS and send it
-
-handle_command({heartbeat},_From,State=#state{max_ts = MaxTS, idx = Partition,
-    causal_service_reg_name =Causal_Service_Id,ordering_service_hb_freq = Hb_Frequency })->
-    Physical_Time=riak_kv_util:get_timestamp(),  %later change to current_monotonic_time()
-    Clock=max(Physical_Time,MaxTS),
-    if
-        MaxTS>Clock-Hb_Frequency ->
-            %lager:info("not sending heartbeat by ~p this time coz clock is ~p ~n",[Partition,Clock]),
-            riak_core_vnode:send_command_after(MaxTS+Hb_Frequency-Clock, {heartbeat}) ;  %has not sent a label since last heartbeat
-        true ->
-            %lager:info("sending heartbeat by ~p and clock is ~p ~n",[Partition,Clock]),
-            riak_kv_ordering_service:partition_heartbeat(Partition,Clock,Causal_Service_Id),
-            riak_core_vnode:send_command_after(Hb_Frequency, {heartbeat})
-    end,
-
-    {noreply,State#state{max_ts = Clock}};
-
 handle_command(?KV_PUT_REQ{bkey=BKey,
                            object=Object,
-                           clock = Clock,
                            req_id=ReqId,
                            start_time=StartTime,
                            options=Options},
-               Sender, State=#state{idx=Idx,max_ts = MaxTS,causal_service_reg_name = Causal_Service_Id}) ->
+               Sender, State=#state{idx=Idx,sequencer_name = Sequence_Name}) ->
+    Seq_Id=riak_kv_sequencer:get_sequence_number(Sequence_Name),
     StartTS = os:timestamp(),
-    PhysicalTS=riak_kv_util:get_timestamp(),  %if not working change to current_monotonic_time()
-    MaxTS0=max(Clock+1,max(PhysicalTS,MaxTS+1)), %retrieve the hybrid clock
-
-    Label=riak_kv_causal_service_util:create_label(ReqId,BKey,MaxTS0,{Idx,node()}),
-    riak_kv_ordering_service:add_label(Label,Causal_Service_Id,Idx),
-    %decide whether we add the label now or at the fsm
-
-    riak_core_vnode:reply(Sender, {w, Idx, ReqId,MaxTS0}), %reply with hybrid clock at server
-    StateNew=State#state{max_ts = MaxTS0},
-    {_Reply, UpdState} = do_put(Sender, BKey,  Object, ReqId, StartTime, Options, StateNew),
+    riak_core_vnode:reply(Sender, {w, Idx, ReqId}),
+    {_Reply, UpdState} = do_put(Sender, BKey,  Object, ReqId, StartTime, Options, State),
     update_vnode_stats(vnode_put, Idx, StartTS),
     {noreply, UpdState};
 
@@ -892,7 +846,6 @@ handle_command({get_index_entries, Opts},
 %% NB. The following two function clauses discriminate on the async_put State field
 handle_command(?KV_W1C_PUT_REQ{bkey={Bucket, Key}, encoded_obj=EncodedVal, type=Type},
                 From, State=#state{mod=Mod, async_put=true, modstate=ModState}) ->
-    lager:info("receive WIC put"),
     StartTS = os:timestamp(),
     Context = {w1c_async_put, From, Type, Bucket, Key, EncodedVal, StartTS},
     case Mod:async_put(Context, Bucket, Key, EncodedVal, ModState) of
@@ -901,10 +854,8 @@ handle_command(?KV_W1C_PUT_REQ{bkey={Bucket, Key}, encoded_obj=EncodedVal, type=
         {error, Reason, UpModState} ->
             {reply, ?KV_W1C_PUT_REPLY{reply={error, Reason}, type=Type}, State#state{modstate=UpModState}}
     end;
-
 handle_command(?KV_W1C_PUT_REQ{bkey={Bucket, Key}, encoded_obj=EncodedVal, type=Type},
                 _From, State=#state{idx=Idx, mod=Mod, async_put=false, modstate=ModState}) ->
-    lager:info("handle WIC put~p",[10]),
     StartTS = os:timestamp(),
     case Mod:put(Bucket, Key, [], EncodedVal, ModState) of
         {ok, UpModState} ->

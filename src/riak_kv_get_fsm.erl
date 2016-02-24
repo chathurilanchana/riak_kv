@@ -27,7 +27,7 @@
 -include_lib("eunit/include/eunit.hrl").
 -export([test_link/7, test_link/5]).
 -endif.
--export([start/7, start_link/7, start_link/5]).
+-export([start/6, start_link/6, start_link/4]).
 -export([init/1, handle_event/3, handle_sync_event/4,
          handle_info/3, terminate/3, code_change/4]).
 -export([prepare/2,validate/2,execute/2,waiting_vnode_r/2,waiting_read_repair/2]).
@@ -66,7 +66,6 @@
                 timeout :: infinity | pos_integer(),
                 tref    :: reference(),
                 bkey :: {riak_object:bucket(), riak_object:key()},
-                clock::non_neg_integer(), %keep track of client clock
                 bucket_props,
                 startnow :: {non_neg_integer(), non_neg_integer(), non_neg_integer()},
                 get_usecs :: non_neg_integer(),
@@ -89,11 +88,11 @@
 %% ===================================================================
 
 %% In place only for backwards compatibility
-start(ReqId,Bucket,Key,MaxTS,R,Timeout,From) ->
-    start_link({raw, ReqId, From}, Bucket, Key,MaxTS, [{r, R}, {timeout, Timeout}]).
+start(ReqId,Bucket,Key,R,Timeout,From) ->
+    start_link({raw, ReqId, From}, Bucket, Key, [{r, R}, {timeout, Timeout}]).
 
-start_link(ReqId,Bucket,Key,MaxTS,R,Timeout,From) ->
-    start_link({raw, ReqId, From}, Bucket, Key,MaxTS, [{r, R}, {timeout, Timeout}]).
+start_link(ReqId,Bucket,Key,R,Timeout,From) ->
+    start_link({raw, ReqId, From}, Bucket, Key, [{r, R}, {timeout, Timeout}]).
 
 %% @doc Start the get FSM - retrieve Bucket/Key with the options provided
 %%
@@ -103,16 +102,16 @@ start_link(ReqId,Bucket,Key,MaxTS,R,Timeout,From) ->
 %%                             in some failure cases.
 %% {notfound_ok, boolean()}  - Count notfound reponses as successful.
 %% {timeout, pos_integer() | infinity} -  Timeout for vnode responses
--spec start_link({raw, req_id(), pid()}, binary(), binary(),non_neg_integer(), options()) ->
+-spec start_link({raw, req_id(), pid()}, binary(), binary(), options()) ->
                         {ok, pid()} | {error, any()}.
-start_link(From, Bucket, Key,MaxTS, GetOptions) ->
+start_link(From, Bucket, Key, GetOptions) ->
     case whereis(riak_kv_get_fsm_sj) of
         undefined ->
             %% Overload protection disabled 
-            Args = [From, Bucket, Key,MaxTS, GetOptions, true],
+            Args = [From, Bucket, Key, GetOptions, true],
             gen_fsm:start_link(?MODULE, Args, []);
         _ ->
-            Args = [From, Bucket, Key,MaxTS, GetOptions, false],
+            Args = [From, Bucket, Key, GetOptions, false],
             case sidejob_supervisor:start_child(riak_kv_get_fsm_sj,
                                                 gen_fsm, start_link,
                                                 [?MODULE, Args, []]) of
@@ -135,11 +134,11 @@ start_link(From, Bucket, Key,MaxTS, GetOptions) ->
 %% bucket_props - bucket properties
 %% preflist2 - [{{Idx,Node},primary|fallback}] preference list
 %%
-test_link(ReqId,Bucket,Key,MaxTS,R,Timeout,From,StateProps) ->
-    test_link({raw, ReqId, From}, Bucket, Key,MaxTS, [{r, R}, {timeout, Timeout}], StateProps).
+test_link(ReqId,Bucket,Key,R,Timeout,From,StateProps) ->
+    test_link({raw, ReqId, From}, Bucket, Key, [{r, R}, {timeout, Timeout}], StateProps).
 
-test_link(From, Bucket, Key,MaxTS, GetOptions, StateProps) ->
-    gen_fsm:start_link(?MODULE, {test, [From, Bucket, Key,MaxTS, GetOptions, true], StateProps}, []).
+test_link(From, Bucket, Key, GetOptions, StateProps) ->
+    gen_fsm:start_link(?MODULE, {test, [From, Bucket, Key, GetOptions, true], StateProps}, []).
 
 -endif.
 
@@ -148,13 +147,12 @@ test_link(From, Bucket, Key,MaxTS, GetOptions, StateProps) ->
 %% ====================================================================
 
 %% @private
-init([From, Bucket, Key,MaxTS, Options0, Monitor]) ->
+init([From, Bucket, Key, Options0, Monitor]) ->
     StartNow = os:timestamp(),
     Options = proplists:unfold(Options0),
     StateData = #state{from = From,
                        options = Options,
                        bkey = {Bucket, Key},
-                       clock = MaxTS,
                        timing = riak_kv_fsm_timing:add_timing(prepare, []),
                        startnow = StartNow},
     (Monitor =:= true) andalso riak_kv_get_put_monitor:get_fsm_spawned(self()),
@@ -295,10 +293,8 @@ validate_quorum(_R, _ROpt, _N, _PR, _PROpt, _NumPrimaries, _NumVnodes) ->
     ok.
 
 %% @private
-
-%MaxTS to be used when integrating with Manuel's
 execute(timeout, StateData0=#state{timeout=Timeout,req_id=ReqId,
-                                   bkey=BKey,clock = _MaxTS, trace=Trace,
+                                   bkey=BKey, trace=Trace,
                                    preflist2 = Preflist2}) ->
     TRef = schedule_timeout(Timeout),
     Preflist = [IndexNode || {IndexNode, _Type} <- Preflist2],

@@ -650,32 +650,7 @@ end
   hidden
 ]}.
 
-
-%% example of super basic mapping
-%% @doc Default ring creation size.  Make sure it is a power of 2,
-%% e.g. 16, 32, 64, 128, 256, 512 etc
-{mapping, "causal_service_delay", "riak_kv.causal_service_delay", [
-    {datatype, integer},
-    {default, "100"}
-]}.
-
-{mapping, "gen_server_register_name", "riak_kv.gen_server_register_name", [
+{mapping, "sequencer_register_name", "riak_kv.sequencer_register_name", [
     {datatype, atom},
-    {default, "causal_ordering_service"}
-]}.
-
-%% type of ordering service to be used for caisal ordering
-%% atom of all_to_one, plum_tree, deterministic
-{mapping, "gen_server_type", "riak_kv.gen_server_type", [
-     {datatype, {enum, [all_to_one, plum_tree, deterministic]}},
-     {default, all_to_one}
-]}.
-
-{mapping, "ordering_service_hb_freq", "riak_kv.ordering_service_hb_freq", [
-    {datatype, integer},
-    {default, "3000"}
-]}.
-{mapping, "stat_name", "riak_kv.stat_name", [
-  {datatype, directory},
-  {default, "/home/chathuri"}
+    {default, "sequencer_ordering_service"}
 ]}.

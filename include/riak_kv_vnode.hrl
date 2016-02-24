@@ -3,7 +3,6 @@
 -record(riak_kv_put_req_v1, {
           bkey :: {binary(),binary()},
           object :: term(),
-          clock::non_neg_integer(),   %keep track of clock of the client
           req_id :: non_neg_integer(),
           start_time :: non_neg_integer(),
           options :: list()}).

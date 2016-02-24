@@ -29,8 +29,7 @@
 -behaviour(supervisor).
 
 -export([start_link/0]).
--export([init/1]).
--export([start_ordering_service/0,stop_ordering_service/1]).
+-export([init/1,start_ordering_service/0,stop_ordering_service/1]).
 
 -define (IF (Bool, A, B), if Bool -> A; true -> B end).
 
@@ -40,18 +39,10 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 
-%% @spec start_ordering_service() -> ServerRet
-%% @doc API for starting the ordering service for causal ordering of events in the dc
 start_ordering_service()->
-    Ordering_Service_Type=app_helper:get_env(riak_kv, gen_server_type),
-
-    case Ordering_Service_Type of
-        all_to_one->lager:info("causal all to one started"),
-            supervisor:start_child(?MODULE,{riak_kv_ordering_service,
-            {riak_kv_ordering_service, start_link, []},
-            permanent, 5000, worker, [riak_kv_ordering_service]});
-        _->lager:info("This type of causal service is not defined ~p")
-    end.
+    supervisor:start_child(?MODULE,{riak_kv_sequencer,
+                {riak_kv_sequencer, start_link, []},
+        permanent, 5000, worker, [riak_kv_ordering_service]}).
 
 stop_ordering_service(Pid)->
     supervisor:terminate_child(?MODULE,Pid).

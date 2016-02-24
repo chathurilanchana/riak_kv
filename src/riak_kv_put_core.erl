@@ -20,8 +20,8 @@
 %%
 %% -------------------------------------------------------------------
 -module(riak_kv_put_core).
--export([init/9, add_result/2, enough/1, response/2,
-         final/1, result_shortcode/1, result_idx/1,result_clock/1]).
+-export([init/9, add_result/2, enough/1, response/1,
+         final/1, result_shortcode/1, result_idx/1]).
 -export_type([putcore/0, result/0, reply/0]).
 
 -ifdef(TEST).
@@ -42,7 +42,6 @@
 -type idxresult() :: {non_neg_integer(), result()}.
 -type idx_type() :: [{non_neg_integer, 'primary' | 'fallback'}].
 -record(putcore, {n :: pos_integer(),
-                  max_ts::non_neg_integer(),
                   w :: non_neg_integer(),
                   dw :: non_neg_integer(),
                   pw :: non_neg_integer(),
@@ -75,13 +74,12 @@ init(N, W, PW, DW, PWFailThreshold,
              pw_fail_threshold = PWFailThreshold,
              dw_fail_threshold = DWFailThreshold,
              allowmult = AllowMult,
-             max_ts = 0,
              returnbody = ReturnBody,
              idx_type = IdxType}.
 
 %% Add a result from the vnode
 -spec add_result(vput_result(), putcore()) -> putcore().
-add_result({w, Idx, _ReqId,_MaxTS}, PutCore = #putcore{results = Results,
+add_result({w, Idx, _ReqId}, PutCore = #putcore{results = Results,
                                                 num_w = NumW}) ->
     PutCore#putcore{results = [{Idx, w} | Results],
                     num_w = NumW + 1};
@@ -89,7 +87,7 @@ add_result({dw, Idx, _ReqId}, PutCore = #putcore{results = Results,
                                                  num_dw = NumDW}) ->
     num_pw(PutCore#putcore{results = [{Idx, {dw, undefined}} | Results],
                     num_dw = NumDW + 1}, Idx);
-add_result({dw, Idx, ResObj, _ReqIdS}, PutCore = #putcore{results = Results,
+add_result({dw, Idx, ResObj, _ReqId}, PutCore = #putcore{results = Results,
                                                          num_dw = NumDW}) ->
     num_pw(PutCore#putcore{results = [{Idx, {dw, ResObj}} | Results],
                     num_dw = NumDW + 1}, Idx);
@@ -123,21 +121,21 @@ enough(_PutCore) ->
     false.
 
 %% Get success/fail response once enough results received
--spec response(putcore(),MaxTS::non_neg_integer()) -> {reply(), putcore()}.
+-spec response(putcore()) -> {reply(), putcore()}.
 %% Perfect world - all quora met
-response(PutCore = #putcore{w = W, num_w = NumW, dw = DW, num_dw = NumDW, pw = PW, num_pw = NumPW},MaxTS) when
+response(PutCore = #putcore{w = W, num_w = NumW, dw = DW, num_dw = NumDW, pw = PW, num_pw = NumPW}) when
       NumW >= W, NumDW >= DW, NumPW >= PW ->
-    maybe_return_body(PutCore,MaxTS);
+    maybe_return_body(PutCore);
 %% Everything is ok, except we didn't meet PW
-response(PutCore = #putcore{w = W, num_w = NumW, dw = DW, num_dw = NumDW, pw = PW, num_pw = NumPW},_MaxTS) when
+response(PutCore = #putcore{w = W, num_w = NumW, dw = DW, num_dw = NumDW, pw = PW, num_pw = NumPW}) when
       NumW >= W, NumDW >= DW, NumPW < PW ->
     check_overload({error, {pw_val_unsatisfied, PW, NumPW}}, PutCore);
 %% Didn't make PW, and PW >= DW
-response(PutCore = #putcore{n = N, num_fail = NumFail, dw = DW, pw=PW, num_pw = NumPW},_MaxTS) when
+response(PutCore = #putcore{n = N, num_fail = NumFail, dw = DW, pw=PW, num_pw = NumPW}) when
       NumFail > N - PW, PW >= DW ->
     check_overload({error, {pw_val_unsatisfied, PW, NumPW}}, PutCore);
 %% Didn't make DW and DW > PW
-response(PutCore = #putcore{n = N, num_fail = NumFail, dw = DW, num_dw = NumDW},_MaxTS) when
+response(PutCore = #putcore{n = N, num_fail = NumFail, dw = DW, num_dw = NumDW}) when
       NumFail > N - DW ->
     check_overload({error, {dw_val_unsatisfied, DW, NumDW}}, PutCore).
 
@@ -169,42 +167,24 @@ final(PutCore = #putcore{final_obj = FinalObj,
             {FinalObj, PutCore}
     end.
 
-
-result_clock({w, _, _,Clock})     -> Clock;
-result_clock({dw, _, _,Clock})    -> Clock;
-result_clock({dw, _, _, _,Clock}) -> Clock;
-result_clock({fail, _, _})  -> -1;
-result_clock(_)             -> -2.
-
-
-
-result_shortcode({w, _, _,_})     -> 1;
-result_shortcode({dw, _, _,_})    -> 2;
-result_shortcode({dw, _, _, _,_}) -> 2;
+result_shortcode({w, _, _})     -> 1;
+result_shortcode({dw, _, _})    -> 2;
+result_shortcode({dw, _, _, _}) -> 2;
 result_shortcode({fail, _, _})  -> -1;
 result_shortcode(_)             -> -2.
 
 result_idx({_, Idx, _})    -> Idx;
 result_idx({_, Idx, _, _}) -> Idx;
-result_idx({_, Idx, _,_,_})    -> Idx;
 result_idx(_)              -> -1.
 
 %% ====================================================================
 %% Internal functions
 %% ====================================================================
-maybe_return_body(PutCore = #putcore{returnbody = false},MaxTS) ->
-    {{ok,MaxTS}, PutCore};
-maybe_return_body(PutCore = #putcore{returnbody = true},MaxTS) ->
+maybe_return_body(PutCore = #putcore{returnbody = false}) ->
+    {ok, PutCore};
+maybe_return_body(PutCore = #putcore{returnbody = true}) ->
     {ReplyObj, UpdPutCore} = final(PutCore),
-    {{ok, ReplyObj,MaxTS}, UpdPutCore}.
-
-
-%todo: check usage and delete
-%maybe_return_body(PutCore = #putcore{returnbody = false}) ->
-  %  {ok, PutCore};
-%maybe_return_body(PutCore = #putcore{returnbody = true}) ->
-  %  {ReplyObj, UpdPutCore} = final(PutCore),
-  %  {{ok, ReplyObj}, UpdPutCore}.
+    {{ok, ReplyObj}, UpdPutCore}.
 
 %% @private Checks IdxType to see if Idx is a primary.
 %% If the Idx is not in the IdxType the world must be
