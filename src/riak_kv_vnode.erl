@@ -556,7 +556,7 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
                            start_time=StartTime,
                            options=Options},
                Sender, State=#state{idx=Idx,sequencer_name = Sequence_Name}) ->
-    Seq_Id=riak_kv_sequencer:get_sequence_number(Sequence_Name),
+    _Seq_Id=riak_kv_sequencer:get_sequence_number(Sequence_Name),
     StartTS = os:timestamp(),
     riak_core_vnode:reply(Sender, {w, Idx, ReqId}),
     {_Reply, UpdState} = do_put(Sender, BKey,  Object, ReqId, StartTime, Options, State),
