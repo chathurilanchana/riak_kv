@@ -2,20 +2,15 @@
 
 riak_dir=/root/Riak/riak
 k=0
-ring_size=128
+ring_size=64
 hb_freq=1000
 
 #put cleanips and private ips in relavant order
 
-unset nodes
+unset privateIps
 while IFS= read -r line; do 
-    nodes+=("$line") 
+    privateIps+=("$line") 
 done <  riaknodes.config
-
-cmd "${args[@]}"
-
-privateIps=("172.31.0.180")
-privateJoinIp="172.31.0.180"
 
 for i in ${privateIps[@]}; do
  privateIp=$(echo ${privateIps[$k]})
