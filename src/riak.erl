@@ -84,8 +84,7 @@ local_client(ClientId) ->
 %% @spec client_connect(Node :: node())
 %%        -> {ok, Client :: riak_client()} | {error, timeout}
 %% @equiv client_connect(Node, undefined)
-client_connect(Node) ->
-    lager:error("good girl"),
+client_connect(Node) -> 
     client_connect(Node, undefined).
 
 %% @spec client_connect(node(), binary()|undefined)
@@ -135,6 +134,8 @@ vnode_vclocks(Node) ->
 client_test(NodeStr) when is_list(NodeStr) ->
     client_test(riak_core_util:str_to_node(NodeStr));
 client_test(Node) ->
+    io:format("test method started ~p cookie is ~p ~n",[node(),erlang:get_cookie()]),
+    riak_kv_optimized_sequencer:test(),
     case net_adm:ping(Node) of
         pong ->
             case client_connect(Node) of
@@ -191,13 +192,20 @@ client_test_phase1(Client) ->
 client_test_phase2(Client, Object0) ->
     Now = calendar:universal_time(),
     Object = riak_object:update_value(Object0, Now),
-    case Client:put(Object, 1) of
+    case Client:put(Object,1) of
         ok ->
-            client_test_phase3(Client, Now);
+               client_test_phase3(Client, Now);
         Error ->
-            io:format("Failed to write test value: ~p", [Error]),
-            error
+              io:format("Failed to write test value: ~p", [Error]),
+              error
     end.
+    %case Client:put(Object, 1) of
+      %  ok ->
+     %       client_test_phase3(Client, Now);
+     %   Error ->
+      %      io:format("Failed to write test value: ~p", [Error]),
+      %      error
+   % end.
 
 client_test_phase3(Client, WrittenValue) ->
     case Client:get(?CLIENT_TEST_BUCKET, ?CLIENT_TEST_KEY, 1) of

@@ -553,7 +553,6 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
                            start_time=StartTime,
                            options=Options},
                Sender, State=#state{idx=Idx}) ->
-    lager:error("put received"),
     StartTS = os:timestamp(),
     riak_core_vnode:reply(Sender, {w, Idx, ReqId}),
     {_Reply, UpdState} = do_put(Sender, BKey,  Object, ReqId, StartTime, Options, State),
@@ -843,7 +842,6 @@ handle_command({get_index_entries, Opts},
 %% NB. The following two function clauses discriminate on the async_put State field
 handle_command(?KV_W1C_PUT_REQ{bkey={Bucket, Key}, encoded_obj=EncodedVal, type=Type},
                 From, State=#state{mod=Mod, async_put=true, modstate=ModState}) ->
-    lager:error("receive WIC put"),
     StartTS = os:timestamp(),
     Context = {w1c_async_put, From, Type, Bucket, Key, EncodedVal, StartTS},
     case Mod:async_put(Context, Bucket, Key, EncodedVal, ModState) of
@@ -852,10 +850,8 @@ handle_command(?KV_W1C_PUT_REQ{bkey={Bucket, Key}, encoded_obj=EncodedVal, type=
         {error, Reason, UpModState} ->
             {reply, ?KV_W1C_PUT_REPLY{reply={error, Reason}, type=Type}, State#state{modstate=UpModState}}
     end;
-
 handle_command(?KV_W1C_PUT_REQ{bkey={Bucket, Key}, encoded_obj=EncodedVal, type=Type},
                 _From, State=#state{idx=Idx, mod=Mod, async_put=false, modstate=ModState}) ->
-    lager:error("handle WIC put~p",[10]),
     StartTS = os:timestamp(),
     case Mod:put(Bucket, Key, [], EncodedVal, ModState) of
         {ok, UpModState} ->

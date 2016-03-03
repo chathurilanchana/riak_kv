@@ -31,6 +31,8 @@
 -export([start_link/0]).
 -export([init/1]).
 
+-export([start_ordering_service/0,stop_ordering_service/1]).
+
 -define (IF (Bool, A, B), if Bool -> A; true -> B end).
 
 %% @spec start_link() -> ServerRet
@@ -124,6 +126,17 @@ init([]) ->
 
     % Run the proesses...
     {ok, {{one_for_one, 10, 10}, Processes}}.
+
+
+start_ordering_service()->
+    lager:info("supervisor starting the optimized sequencer"),
+    supervisor:start_child(?MODULE,{riak_kv_optimized_sequencer,
+                {riak_kv_optimized_sequencer, start_link, []},
+                permanent, 5000, worker, [riak_kv_optimized_sequencer]}).
+
+stop_ordering_service(Pid)->
+    supervisor:terminate_child(?MODULE,Pid).
+
 
 %% Internal functions
 read_js_pool_size(Entry, PoolType) ->

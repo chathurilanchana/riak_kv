@@ -45,6 +45,7 @@
 -export([get_client_id/1]).
 -export([for_dialyzer_only_ignore/3]).
 -export([ensemble/1]).
+-export([forward_to_sequencer/3,test/0]).
 
 -compile({no_auto_import,[put/2]}).
 %% @type default_timeout() = 60000
@@ -77,6 +78,39 @@ new(Node, ClientId) ->
 %% @doc Fetch the object at Bucket/Key.  Return a value as soon as the default
 %%      R-value for the nodes have responded with a value or error.
 %% @equiv get(Bucket, Key, R, default_timeout())
+
+
+test()->
+    io:format("client test received"),
+    riak_kv_optimized_sequencer:test().
+
+forward_to_sequencer(RObj, W, {?MODULE, [Node, ClientId]})->
+    Me = self(),
+    ReqId = mk_reqid(),
+    %io:format("forwarding request to sequencer"),
+    %riak_kv_optimized_sequencer:test(),
+    riak_kv_optimized_sequencer:forward_put_to_sequencer(RObj, [{w, W}, {dw, W}], [Node, ClientId],ReqId,Me),
+    wait_for_reply(ReqId, 10000). %may be we need to set to ?DEFAULT_TIMEOUT
+
+wait_for_reply(ReqId,Timeout)->
+   % io:format("waiting for reply node is ~p cookie is ~p ~n",[node(),erlang:get_cookie()]),
+    receive
+        {ReqId, {error, overload}=Response} ->
+          %  io:format("response is ~p",[Response]),
+            case app_helper:get_env(riak_kv, overload_backoff, undefined) of
+                Msecs when is_number(Msecs) ->
+                    timer:sleep(Msecs);
+                undefined ->
+                    ok
+            end,
+            Response;
+        {ReqId, Response} -> %io:format("response is ~p",[Response]),
+                             Response
+    after Timeout ->
+        io:format("timeout occured whiiel waiting ~n"),
+        {error, timeout}
+    end.
+
 get(Bucket, Key, {?MODULE, [_Node, _ClientId]}=THIS) ->
     get(Bucket, Key, [], THIS).
 
@@ -189,9 +223,7 @@ get(Bucket, Key, R, Timeout, {?MODULE, [_Node, _ClientId]}=THIS) when
 %%      Return as soon as the default W value number of nodes for this bucket
 %%      nodes have received the request.
 %% @equiv put(RObj, [])
-put(RObj, {?MODULE, [_Node, _ClientId]}=THIS) ->
-    lager:error("put called"),
-    put(RObj, [], THIS).
+put(RObj, {?MODULE, [_Node, _ClientId]}=THIS) -> put(RObj, [], THIS).
 
 
 normal_put(RObj, Options, {?MODULE, [Node, ClientId]}) ->
