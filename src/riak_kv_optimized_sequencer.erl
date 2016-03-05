@@ -61,8 +61,10 @@ handle_cast({put,RObj, Options,[Node, _ClientId],ReqId,Sender},State=#state{sequ
     %    Node ->
            % riak_kv_put_fsm:start_link({raw, ReqId, Sender}, RObj, Options);
      %   _ ->
-    proc_lib:spawn_link(Node, riak_kv_put_fsm, start_link,
-                [{raw, ReqId, Sender}, RObj, Options]),
+    rpc:async_call(Node, riak_kv_put_fsm, start_link,
+                   [{raw, ReqId, Sender}, RObj, Options]),
+    %proc_lib:spawn_link(Node, riak_kv_put_fsm, start_link,
+     %           [{raw, ReqId, Sender}, RObj, Options]),
    % end,
     {noreply,State#state{sequence_id = SequenceId+1}};
 
