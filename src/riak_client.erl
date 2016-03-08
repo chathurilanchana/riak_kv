@@ -87,8 +87,6 @@ test()->
 forward_to_sequencer(RObj, W, {?MODULE, [Node, ClientId]})->
     Me = self(),
     ReqId = mk_reqid(),
-    %io:format("forwarding request to sequencer"),
-    %riak_kv_optimized_sequencer:test(),
     riak_kv_optimized_sequencer:forward_put_to_sequencer(RObj, [{w, W}, {dw, W}], [Node, ClientId],ReqId,Me),
     wait_for_reply(ReqId, 10000). %may be we need to set to ?DEFAULT_TIMEOUT
 

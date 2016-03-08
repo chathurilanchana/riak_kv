@@ -55,18 +55,13 @@ handle_call(Request, _From, State) ->
     %lager:info("received msg is ~p ~n",[Request]),
     {reply, ok, State}.
 
-handle_cast({put,RObj, Options,[Node, _ClientId],ReqId,Sender},State=#state{sequence_id = SequenceId})->
-    %lager:info("optimised sequencer received the call node is ~p received is ~p ~n",[node(),Node]),
-
-    rpc:call(Node, riak_kv_put_fsm, start_link,
-                   [{raw, ReqId, Sender}, RObj, Options]),
-    
-    %rpc:async_call(Node, riak_kv_put_fsm, start_link,
-    %               [{raw, ReqId, Sender}, RObj, Options]),               
-
-    %proc_lib:spawn_link(Node, riak_kv_put_fsm, start_link,
-     %           [{raw, ReqId, Sender}, RObj, Options]),
-
+handle_cast({put,RObj, Options,[_Node, _ClientId],ReqId,Sender},State=#state{sequence_id = SequenceId})->
+    BKey = {riak_object:bucket(RObj), riak_object:key(RObj)},
+    BucketProps = riak_core_bucket:get_bucket(riak_object:bucket(RObj)),
+    DocIdx = riak_core_util:chash_key(BKey, BucketProps),
+    Preflist = riak_core_apl:get_primary_apl(DocIdx, 1, riak_kv),
+    [{IndexNode, _Type}] = Preflist,
+    riak_kv_vnode:spawn_fsm(IndexNode, {ReqId,Sender,RObj,Options,SequenceId}),
     {noreply,State#state{sequence_id = SequenceId+1}};
 
 handle_cast({test}, State) ->

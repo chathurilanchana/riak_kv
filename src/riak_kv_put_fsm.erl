@@ -34,7 +34,7 @@
 -behaviour(gen_fsm).
 -define(DEFAULT_OPTS, [{returnbody, false}, {update_last_modified, true}]).
 -export([start/3, start/6,start/7]).
--export([start_link/3,start_link/6,start_link/7]).
+-export([start_link/3,start_link/4,start_link/6,start_link/7]).
 -export([set_put_coordinator_failure_timeout/1,
          get_put_coordinator_failure_timeout/0]).
 -ifdef(TEST).
@@ -93,6 +93,7 @@
                 preflist2 :: riak_core_apl:preflist_ann(),
                 bkey :: {riak_object:bucket(), riak_object:key()},
                 req_id :: pos_integer(),
+                sequence_id::pos_integer(),
                 starttime :: pos_integer(), % start time to send to vnodes
                 timeout :: pos_integer()|infinity,
                 tref    :: reference(),
@@ -137,9 +138,29 @@ start_link(ReqId,RObj,W,DW,Timeout,ResultPid) ->
     start_link(ReqId,RObj,W,DW,Timeout,ResultPid,[]).
 
 start_link(ReqId,RObj,W,DW,Timeout,ResultPid,Options) ->
-    start_link({raw, ReqId, ResultPid}, RObj, [{w, W}, {dw, DW}, {timeout, Timeout} | Options]).
+    start_link({raw, ReqId, ResultPid}, RObj, [{w, W}, {dw, DW}, {timeout, Timeout} | Options],0).
+
+start_link(From, Object, PutOptions,SequenceId) ->
+    case whereis(riak_kv_put_fsm_sj) of
+        undefined ->
+            %% Overload protection disabled
+            Args = [From, Object, PutOptions,SequenceId, true],
+            gen_fsm:start_link(?MODULE, Args, []);
+        _ ->
+            Args = [From, Object, PutOptions,SequenceId, false],
+            case sidejob_supervisor:start_child(riak_kv_put_fsm_sj,
+                                                gen_fsm, start_link,
+                                                [?MODULE, Args, []]) of
+                {error, overload} ->
+                    riak_kv_util:overload_reply(From),
+                    {error, overload};
+                {ok, Pid} ->
+                    {ok, Pid}
+            end
+    end.
 
 start_link(From, Object, PutOptions) ->
+    lager:info("fsm called ~n"),
     case whereis(riak_kv_put_fsm_sj) of
         undefined ->
             %% Overload protection disabled
@@ -148,8 +169,8 @@ start_link(From, Object, PutOptions) ->
         _ ->
             Args = [From, Object, PutOptions, false],
             case sidejob_supervisor:start_child(riak_kv_put_fsm_sj,
-                                                gen_fsm, start_link,
-                                                [?MODULE, Args, []]) of
+                gen_fsm, start_link,
+                [?MODULE, Args, []]) of
                 {error, overload} ->
                     riak_kv_util:overload_reply(From),
                     {error, overload};
@@ -230,7 +251,7 @@ test_link(From, Object, PutOptions, StateProps) ->
 %% ====================================================================
 
 %% @private
-init([From, RObj, Options0, Monitor]) ->
+init([From, RObj, Options0,SequenceId ,Monitor]) ->
     BKey = {Bucket, Key} = {riak_object:bucket(RObj), riak_object:key(RObj)},
     CoordTimeout = get_put_coordinator_failure_timeout(),
     Trace = app_helper:get_env(riak_kv, fsm_trace_enabled),
@@ -238,6 +259,7 @@ init([From, RObj, Options0, Monitor]) ->
     StateData = #state{from = From,
                        robj = RObj,
                        bkey = BKey,
+                       sequence_id =SequenceId,
                        trace = Trace,
                        options = Options,
                        timing = riak_kv_fsm_timing:add_timing(prepare, []),
@@ -279,6 +301,7 @@ init({test, Args, StateProps}) ->
 %% @private
 prepare(timeout, StateData0 = #state{from = From, robj = RObj,
                                      bkey = BKey = {Bucket, _Key},
+                                     sequence_id = Sequence_Id,
                                      options = Options,
                                      trace = Trace,
                                      bad_coordinators = BadCoordinators}) ->
@@ -344,7 +367,7 @@ prepare(timeout, StateData0 = #state{from = From, robj = RObj,
                                                [{ack_execute, self()}|Options]),
                         MiddleMan = spawn_coordinator_proc(
                                       CoordNode, riak_kv_put_fsm, start_link,
-                                      [From,RObj,Options2]),
+                                      [From,RObj,Options2,Sequence_Id]),
                         ?DTRACE(Trace, ?C_PUT_FSM_PREPARE, [2],
                                 ["prepare", atom2list(CoordNode)]),
                         ok = riak_kv_stat:update(coord_redir),
@@ -536,7 +559,7 @@ execute(State=#state{options = Options, coord_pl_entry = CPL}) ->
 %% Send the put coordinating put requests to the local vnode - the returned object
 %% will guarantee a frontier object.
 %% N.B. Not actually a state - here in the source to make reading the flow easier
-execute_local(StateData=#state{robj=RObj, req_id = ReqId,
+execute_local(StateData=#state{robj=RObj, req_id = ReqId,sequence_id = SequenceId,
                                timeout=Timeout, bkey=BKey,
                                coord_pl_entry = {_Index, Node} = CoordPLEntry,
                                vnode_options=VnodeOptions,
@@ -551,7 +574,7 @@ execute_local(StateData=#state{robj=RObj, req_id = ReqId,
                 StateData
         end,
     TRef = schedule_timeout(Timeout),
-    riak_kv_vnode:coord_put(CoordPLEntry, BKey, RObj, ReqId, StartTime, VnodeOptions),
+    riak_kv_vnode:coord_put(CoordPLEntry, BKey, RObj, ReqId, StartTime, VnodeOptions,SequenceId),
     StateData2 = StateData1#state{robj = RObj, tref = TRef},
     %% Must always wait for local vnode - it contains the object with updated vclock
     %% to use for the remotes. (Ignore optimization for N=1 case for now).
