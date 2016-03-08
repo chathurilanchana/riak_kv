@@ -4,6 +4,7 @@
           bkey :: {binary(),binary()},
           object :: term(),
           req_id :: non_neg_integer(),
+          seq_id::pos_integer(),
           start_time :: non_neg_integer(),
           options :: list()}).
 

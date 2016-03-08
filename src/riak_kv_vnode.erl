@@ -33,7 +33,7 @@
          local_get/2,
          local_put/2,
          local_put/3,
-         coord_put/6,
+         coord_put/7,
          readrepair/6,
          list_keys/4,
          fold/3,
@@ -78,6 +78,7 @@
 
 -export([handoff_data_encoding_method/0]).
 -export([set_vnode_forwarding/2]).
+-export([spawn_fsm/2]).
 
 -include_lib("riak_kv_vnode.hrl").
 -include_lib("riak_kv_index.hrl").
@@ -320,20 +321,25 @@ refresh_index_data(Partition, BKey, IdxData, TimeOut) ->
 
 %% Issue a put for the object to the preflist, expecting a reply
 %% to an FSM.
-coord_put(IndexNode, BKey, Obj, ReqId, StartTime, Options) when is_integer(StartTime) ->
-    coord_put(IndexNode, BKey, Obj, ReqId, StartTime, Options, {fsm, undefined, self()}).
+coord_put(IndexNode, BKey, Obj, ReqId, StartTime, Options,SequenceId) when is_integer(StartTime) ->
+    coord_put(IndexNode, BKey, Obj, ReqId, StartTime, Options,SequenceId, {fsm, undefined, self()}).
 
-coord_put(IndexNode, BKey, Obj, ReqId, StartTime, Options, Sender)
+coord_put(IndexNode, BKey, Obj, ReqId, StartTime, Options,SequenceId, Sender)
   when is_integer(StartTime) ->
     riak_core_vnode_master:command(IndexNode,
                                    ?KV_PUT_REQ{
                                       bkey = sanitize_bkey(BKey),
                                       object = Obj,
                                       req_id = ReqId,
+                                       seq_id = SequenceId,
                                       start_time = StartTime,
                                       options = [coord | Options]},
                                    Sender,
                                    riak_kv_vnode_master).
+
+spawn_fsm(IndexNode, {ReqId,Sender,RObj,Options,SequenceId})->
+    riak_core_vnode_master:command(IndexNode,{spawn_fsm,ReqId,Sender,RObj,Options,SequenceId}, riak_kv_vnode_master).
+
 
 %% Do a put without sending any replies
 readrepair(Preflist, BKey, Obj, ReqId, StartTime, Options) ->
@@ -550,6 +556,7 @@ handle_overload_info(_, _) ->
 handle_command(?KV_PUT_REQ{bkey=BKey,
                            object=Object,
                            req_id=ReqId,
+                           seq_id = _SequenceId,
                            start_time=StartTime,
                            options=Options},
                Sender, State=#state{idx=Idx}) ->
@@ -558,6 +565,11 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
     {_Reply, UpdState} = do_put(Sender, BKey,  Object, ReqId, StartTime, Options, State),
     update_vnode_stats(vnode_put, Idx, StartTS),
     {noreply, UpdState};
+
+handle_command({spawn_fsm,ReqId,Sender,RObj,Options,SequenceId},_Sender,State)->
+    riak_kv_put_fsm:start_link({raw, ReqId, Sender}, RObj, Options,SequenceId),
+    {noreply,State};
+
 
 handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId},Sender,State) ->
     do_get(Sender, BKey, ReqId, State);

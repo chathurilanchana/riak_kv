@@ -129,10 +129,10 @@ init([]) ->
 
 
 start_ordering_service()->
-    lager:info("supervisor starting the optimized sequencer"),
-    supervisor:start_child(?MODULE,{riak_kv_optimized_sequencer,
-                {riak_kv_optimized_sequencer, start_link, []},
-                permanent, 5000, worker, [riak_kv_optimized_sequencer]}).
+    lager:info("supervisor starting the optimised sequencer"),
+    supervisor:start_child(?MODULE,{riak_kv_optimised_sequencer,
+                {riak_kv_optimised_sequencer, start_link, []},
+                permanent, 5000, worker, [riak_kv_optimised_sequencer]}).
 
 stop_ordering_service(Pid)->
     supervisor:terminate_child(?MODULE,Pid).

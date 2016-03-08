@@ -135,7 +135,7 @@ client_test(NodeStr) when is_list(NodeStr) ->
     client_test(riak_core_util:str_to_node(NodeStr));
 client_test(Node) ->
     io:format("test method started ~p cookie is ~p ~n",[node(),erlang:get_cookie()]),
-    riak_kv_optimized_sequencer:test(),
+    riak_kv_optimised_sequencer:test(),
     case net_adm:ping(Node) of
         pong ->
             case client_connect(Node) of
