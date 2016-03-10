@@ -74,7 +74,7 @@
          handle_exit/3,
          handle_info/2,
          handle_overload_info/2,
-         ready_to_exit/0]). %% Note: optional function of the behaviour
+         ready_to_exit/0,heartbeat/1]). %% Note: optional function of the behaviour
 
 -export([handoff_data_encoding_method/0]).
 -export([set_vnode_forwarding/2]).
@@ -199,6 +199,10 @@
                   is_index=false :: boolean(), %% set if the b/end supports indexes
                   crdt_op = undefined :: undefined | term() %% if set this is a crdt operation
                  }).
+
+
+heartbeat(PrefList)->
+    riak_core_vnode_master:command(PrefList, {heartbeat}, {fsm, undefined, self()}, riak_kv_vnode_master).
 
 -spec maybe_create_hashtrees(state()) -> state().
 maybe_create_hashtrees(State) ->
@@ -552,6 +556,13 @@ handle_overload_info({raw_forward_get, _, From}, _Idx) ->
     riak_kv_ensemble_backend:reply(From, {error, vnode_overload});
 handle_overload_info(_, _) ->
     ok.
+
+handle_command({heartbeat},_From,State=#state{idx = Partition})->
+     Physical_Time=riak_kv_util:get_timestamp(),  %later change to current_monotonic_time()
+     %lager:info("sending heartbeat by ~p and clock is ~p ~n",[Partition,Clock]),
+     riak_kv_ord_service:partition_heartbeat(Partition,Physical_Time),
+     riak_core_vnode:send_command_after(1000, {heartbeat}),
+     {noreply,State};
 
 handle_command(?KV_PUT_REQ{bkey=BKey,
                            object=Object,

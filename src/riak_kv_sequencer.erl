@@ -6,7 +6,7 @@
 %%% @end
 %%% Created : 02. Mar 2016 12:40
 %%%-------------------------------------------------------------------
--module(riak_kv_optimised_sequencer).
+-module(riak_kv_sequencer).
 -author("chathuri").
 
 -behaviour(gen_server).
@@ -22,7 +22,7 @@
     terminate/2,
     code_change/3]).
 
--export([forward_put_to_sequencer/5,test/0]).
+-export([get_sequence_number/0,test/0]).
 
 -define(SERVER, ?MODULE).
 
@@ -32,21 +32,21 @@ test()->
     Status=net_kernel:connect_node('riak@127.0.0.1'), %this is the node where we run global server
     global:sync(),
       io:format("calling test ~p ~n",[Status]),
-    case catch gen_server:call({global,riak_kv_optimised_sequencer},{test}) of
+    case catch gen_server:call({global,riak_kv_sequencer},{test}) of
         {'EXIT', ErrorExit} -> io:fwrite("ErrorExit ~p~n",[ErrorExit]),lager:info("error is ~p ~n",[ErrorExit]);
             {_, _}  ->lager:info("another error occured  ~n");
             ok->lager:info("this is working")
     end.
 
 
-forward_put_to_sequencer(RObj,Options, [Node, ClientId],ReqId,Sender)->
+get_sequence_number()->
     %net_kernel:connect_node('riak@127.0.0.1'), %this is the node where we run global server
    % global:sync(),
    % gen_server:call({global,riak_kv_optimised_sequencer}, {put,RObj, Options,[Node, ClientId],ReqId,Sender}).
-    gen_server:cast({global,riak_kv_optimised_sequencer}, {put,RObj, Options,[Node, ClientId],ReqId,Sender}).
+    gen_server:call({global,riak_kv_sequencer}, {get_sequence_number}).
 
 start_link() ->
-    gen_server:start_link({global,riak_kv_optimised_sequencer}, ?MODULE, [riak_kv_optimised_sequencer], []).
+    gen_server:start_link({global,riak_kv_sequencer}, ?MODULE, [riak_kv_sequencer], []).
 
 init([ServerName]) ->
     lager:info("optimized sequencer strted ~n"),
@@ -56,19 +56,15 @@ handle_call({test}, _From,State) ->
     lager:info("request received by server ~n"),
     {reply,ok, State};
 
+
+handle_call({get_sequence_number},_From,State=#state{sequence_id = SequenceId})->
+    NewSeqId=SequenceId+1,
+    {reply,NewSeqId,State#state{sequence_id = NewSeqId}};
+
 handle_call(Request, _From, State) ->
     lager:info("received msg is ~p ~n",[Request]),
     %lager:info("received msg is ~p ~n",[Request]),
     {reply, ok, State}.
-
-handle_cast({put,RObj, _Options,[_Node, _ClientId],ReqId,Sender},State=#state{sequence_id = SequenceId})->
-    BKey = {riak_object:bucket(RObj), riak_object:key(RObj)},
-    BucketProps = riak_core_bucket:get_bucket(riak_object:bucket(RObj)),
-    DocIdx = riak_core_util:chash_key(BKey, BucketProps),
-    Preflist = riak_core_apl:get_primary_apl(DocIdx, 1, riak_kv),
-    [{_IndexNode, _Type}] = Preflist,
-    Sender!{ReqId,ok},
-    {noreply,State#state{sequence_id = SequenceId+1}};
 
 handle_cast({test}, State) ->
     lager:info("put request received by server ~n"),

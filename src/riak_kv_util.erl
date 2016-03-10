@@ -47,7 +47,7 @@
          get_write_once/1,
          overload_reply/1,
          get_backend_config/3,
-         is_modfun_allowed/2]).
+         is_modfun_allowed/2,get_timestamp/0]).
 
 -include_lib("riak_kv_vnode.hrl").
 
@@ -400,6 +400,10 @@ exact_puts_active() ->
         _ ->
             length(sidejob_supervisor:which_children(riak_kv_put_fsm_sj))
     end.
+
+get_timestamp()->
+    {MegaSecs, Secs, MicroSecs}=os:timestamp(),
+    (MegaSecs * 1000000 + Secs) * 1000000 + MicroSecs.
 
 gets_active() ->
     case whereis(riak_kv_get_fsm_sj) of

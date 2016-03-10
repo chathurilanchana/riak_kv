@@ -45,7 +45,7 @@
 -export([get_client_id/1]).
 -export([for_dialyzer_only_ignore/3]).
 -export([ensemble/1]).
--export([forward_to_sequencer/3,test/0]).
+-export([forward_to_sequencer/3,forward_to_old_sequencer/1,forward_to_ordering_service/2,test/0]).
 
 -compile({no_auto_import,[put/2]}).
 %% @type default_timeout() = 60000
@@ -82,6 +82,7 @@ new(Node, ClientId) ->
 
 test()->
     io:format("client test received"),
+    wait_for_reply(10,1000),
     riak_kv_optimised_sequencer:test().
 
 forward_to_sequencer(RObj, W, {?MODULE, [Node, ClientId]})->
@@ -89,6 +90,14 @@ forward_to_sequencer(RObj, W, {?MODULE, [Node, ClientId]})->
     ReqId = mk_reqid(),
     riak_kv_optimised_sequencer:forward_put_to_sequencer(RObj, [{w, W}, {dw, W}], [Node, ClientId],ReqId,Me),
     wait_for_reply(ReqId, 10000). %may be we need to set to ?DEFAULT_TIMEOUT
+
+forward_to_old_sequencer( {?MODULE, [_Node, _ClientId]})->
+    SequenceId=riak_kv_sequencer:get_sequence_number(),
+    {ok,SequenceId}.
+
+forward_to_ordering_service(Label, {?MODULE, [_Node, _ClientId]})->
+     riak_kv_ord_service:add_label(Label),
+     ok.
 
 wait_for_reply(ReqId,Timeout)->
     % io:format("waiting for reply node is ~p cookie is ~p ~n",[node(),erlang:get_cookie()]),

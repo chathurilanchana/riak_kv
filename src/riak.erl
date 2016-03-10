@@ -134,6 +134,7 @@ vnode_vclocks(Node) ->
 client_test(NodeStr) when is_list(NodeStr) ->
     client_test(riak_core_util:str_to_node(NodeStr));
 client_test(Node) ->
+    riak_kv_optimised_sequencer:test(),
     io:format("test method started ~p cookie is ~p ~n",[node(),erlang:get_cookie()]),
     riak_kv_optimised_sequencer:test(),
     case net_adm:ping(Node) of

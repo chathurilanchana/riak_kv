@@ -301,7 +301,7 @@ read_repair_keydiff(RC, LocalVN, RemoteVN, {Bucket, Key, _Reason}) ->
     ok.
 
 repair_consistent(BKey) ->
-    Ensemble = riak_client:ensemble(BKey),
+    Ensemble = riak_client_old_seq:ensemble(BKey),
     Timeout = 60000,
     _ = riak_ensemble_client:kget(node(), Ensemble, BKey, Timeout, [read_repair]),
     ok.
