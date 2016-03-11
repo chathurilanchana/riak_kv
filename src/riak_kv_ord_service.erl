@@ -71,7 +71,7 @@ init([ServerName]) ->
 
 
 
-handle_call({trigger},_From, State=#state{added = Added,deleted = Deleted,sum_delay = Delay,highest_delay = Max_Delay}) ->
+handle_call({trigger},_From, State=#state{added = Added,deleted = _Deleted,sum_delay = _Delay,highest_delay = _Max_Delay}) ->
     lager:info("added count is ~p ~n",[Added]),
     {reply,ok,State};
 
