@@ -81,7 +81,7 @@ handle_call(_Request, _From, State) ->
 
 handle_cast({add_label,_Label},State=#state{labels = _Labels,heartbeats = _Heartbeats,deleted = _Deleted,sum_delay = _Sum_Delay,highest_delay = _Max_Delay,added=Added})->
     %lager:info("Label ~p and heartbeat is ~p",[orddict:fetch(Label_Timestamp,Labels1),dict:fetch(Partition,Heartbeats1)]),
-    {noreply,State#state{added=Added+1};
+    {noreply,State#state{added=Added+1}};
 
 handle_cast({partition_heartbeat,_Clock,_Partition},State=#state{labels = _Labels,heartbeats = _Heartbeats,deleted = _Deleted,sum_delay = _Sum_Delay,highest_delay = _Max_Delay})->
     {noreply,State};
