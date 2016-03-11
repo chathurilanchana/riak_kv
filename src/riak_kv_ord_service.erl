@@ -73,16 +73,16 @@ init([ServerName]) ->
 
 handle_call({trigger},_From, State=#state{added = Added,deleted = Deleted,sum_delay = Delay,highest_delay = Max_Delay}) ->
     Delay_Per_Op=Delay div Deleted,
-    lager:info("added count is ~p deleted count is ~p delay-per-op is ~p max-delay is ~p ~n",[Added,Deleted,Delay_Per_Op,Max_Delay]),
+    lager:info("added count is ~p ~n",[Added]),
     {reply,ok,State};
 
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
 
-handle_cast({add_label,_Label},State=#state{labels = _Labels,heartbeats = _Heartbeats,added = _Added,deleted = _Deleted,sum_delay = _Sum_Delay,highest_delay = _Max_Delay})->
+handle_cast({add_label,_Label},State=#state{labels = _Labels,heartbeats = _Heartbeats,deleted = _Deleted,sum_delay = _Sum_Delay,highest_delay = _Max_Delay,added=Added})->
     %lager:info("Label ~p and heartbeat is ~p",[orddict:fetch(Label_Timestamp,Labels1),dict:fetch(Partition,Heartbeats1)]),
-    {noreply,State};
+    {noreply,State#state{added=Added+1};
 
 handle_cast({partition_heartbeat,_Clock,_Partition},State=#state{labels = _Labels,heartbeats = _Heartbeats,deleted = _Deleted,sum_delay = _Sum_Delay,highest_delay = _Max_Delay})->
     {noreply,State};
