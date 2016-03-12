@@ -600,7 +600,7 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
     MaxTS0=max(Clock+1,max(PhysicalTS,MaxTS+1)), %retrieve the hybrid clock
 
     Label=riak_kv_causal_service_util:create_label(ReqId,BKey,MaxTS0,{Idx,node()}),
-    riak_kv_ordering_service:add_label(Label,Causal_Service_Id,Idx),
+   %riak_kv_ordering_service:add_label(Label,Causal_Service_Id,Idx),
     %decide whether we add the label now or at the fsm
 
     riak_core_vnode:reply(Sender, {w, Idx, ReqId,MaxTS0}), %reply with hybrid clock at server
