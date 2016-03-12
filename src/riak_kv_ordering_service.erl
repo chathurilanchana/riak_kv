@@ -67,7 +67,7 @@ init([ServerName]) ->
     GrossPrefLists = riak_core_ring:all_preflists(Ring, 1),
     Dict1 = lists:foldl(fun(PrefList, Dict) ->
         {Partition, _Node} = hd(PrefList),
-        %riak_kv_vnode:heartbeat(PrefList),
+        riak_kv_vnode:heartbeat(PrefList),
         dict:store(Partition, 0, Dict)
                        end, dict:new(), GrossPrefLists),
     lager:info("dictionary size is ~p ~n",[dict:size(Dict1)]),
