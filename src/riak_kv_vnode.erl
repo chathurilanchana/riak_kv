@@ -594,12 +594,12 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
                            req_id=ReqId,
                            start_time=StartTime,
                            options=Options},
-               Sender, State=#state{idx=Idx,max_ts = MaxTS,causal_service_reg_name = Causal_Service_Id}) ->
+               Sender, State=#state{idx=Idx,max_ts = MaxTS,causal_service_reg_name = _Causal_Service_Id}) ->
     StartTS = os:timestamp(),
     PhysicalTS=riak_kv_util:get_timestamp(),  %if not working change to current_monotonic_time()
     MaxTS0=max(Clock+1,max(PhysicalTS,MaxTS+1)), %retrieve the hybrid clock
 
-    Label=riak_kv_causal_service_util:create_label(ReqId,BKey,MaxTS0,{Idx,node()}),
+    _Label=riak_kv_causal_service_util:create_label(ReqId,BKey,MaxTS0,{Idx,node()}),
    %riak_kv_ordering_service:add_label(Label,Causal_Service_Id,Idx),
     %decide whether we add the label now or at the fsm
 
