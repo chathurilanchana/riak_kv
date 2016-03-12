@@ -71,7 +71,7 @@ init([ServerName]) ->
         dict:store(Partition, 0, Dict)
                        end, dict:new(), GrossPrefLists),
     lager:info("dictionary size is ~p ~n",[dict:size(Dict1)]),
-    erlang:send_after(10000, self(), print_stats),
+    %erlang:send_after(10000, self(), print_stats),
     {ok, #state{heartbeats = Dict1,labels = orddict:new(), reg_name = ServerName,added = 0,deleted = 0,sum_delay = 0,highest_delay = 0,stat_file_name = File_Name}}.
 
 
