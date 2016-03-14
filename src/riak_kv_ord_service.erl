@@ -174,7 +174,7 @@ deliver_labels(Min_Clock,[Head|Rest],Deleted,Sum_Delay)->
     {Clock,List_Labels}=Head,
     %lager:info("list label is ~p and min clock is ~p ~n",[List_Labels,Min_Clock]),
     case (Clock =< Min_Clock) of
-        true-> {Deleted2,Sum_Delay2}=lists:foldl(fun(Label,{Deleted1,Sum_Delay1})->
+        true-> {Deleted2,Sum_Delay2}=lists:foldl(fun(_Label,{Deleted1,Sum_Delay1})->
             %deliver labels to the other datacenters
             {Deleted1+1,0}
                                                  end,{Deleted,Sum_Delay},List_Labels),
@@ -184,11 +184,11 @@ deliver_labels(Min_Clock,[Head|Rest],Deleted,Sum_Delay)->
     end.
 
 
-calculate_sum_delay(Added_Timestamp,Sum_Delay)->
-    Current_Time=riak_kv_util:get_timestamp(),
-    Diff_in_Msec=(Current_Time-Added_Timestamp) div 1000,
+%calculate_sum_delay(Added_Timestamp,Sum_Delay)->
+ %   Current_Time=riak_kv_util:get_timestamp(),
+  %  Diff_in_Msec=(Current_Time-Added_Timestamp) div 1000,
 
-    case (Diff_in_Msec>0) of
-        true->(Sum_Delay+Diff_in_Msec);
-        false->Sum_Delay   %due to clock drifts or non monotonocity
-    end.
+   % case (Diff_in_Msec>0) of
+    %    true->(Sum_Delay+Diff_in_Msec);
+     %   false->Sum_Delay   %due to clock drifts or non monotonocity
+    %end.
