@@ -58,14 +58,14 @@ handle_call(Request, _From, State) ->
 handle_cast({put,RObj, Options,[Node, _ClientId],ReqId,Sender},State=#state{sequence_id = SequenceId})->
     %lager:info("optimised sequencer received the call node is ~p received is ~p ~n",[node(),Node]),
 
-    rpc:call(Node, riak_kv_put_fsm, start_link,
-                   [{raw, ReqId, Sender}, RObj, Options]),
+    %rpc:call(Node, riak_kv_put_fsm, start_link,
+    %               [{raw, ReqId, Sender}, RObj, Options]),
     
     %rpc:async_call(Node, riak_kv_put_fsm, start_link,
     %               [{raw, ReqId, Sender}, RObj, Options]),               
 
-    %proc_lib:spawn_link(Node, riak_kv_put_fsm, start_link,
-     %           [{raw, ReqId, Sender}, RObj, Options]),
+    proc_lib:spawn_link(Node, riak_kv_put_fsm, start_link,
+                [{raw, ReqId, Sender}, RObj, Options]),
 
     {noreply,State#state{sequence_id = SequenceId+1}};
 
