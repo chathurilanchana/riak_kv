@@ -174,7 +174,7 @@ deliver_labels(Min_Clock,[Head|Rest],Deleted,Sum_Delay)->
     {Clock,List_Labels}=Head,
     %lager:info("list label is ~p and min clock is ~p ~n",[List_Labels,Min_Clock]),
     case (Clock =< Min_Clock) of
-        true-> {Deleted2,Sum_Delay2}=lists:foldl(fun(_Label,{Deleted1,Sum_Delay1})->
+        true-> {Deleted2,Sum_Delay2}=lists:foldl(fun(_Label,{Deleted1,_Sum_Delay1})->
             %deliver labels to the other datacenters
             {Deleted1+1,0}
                                                  end,{Deleted,Sum_Delay},List_Labels),
