@@ -176,7 +176,7 @@ deliver_labels(Min_Clock,[Head|Rest],Deleted,Sum_Delay)->
     case (Clock =< Min_Clock) of
         true-> {Deleted2,Sum_Delay2}=lists:foldl(fun(Label,{Deleted1,Sum_Delay1})->
             %deliver labels to the other datacenters
-            {Deleted1+1,calculate_sum_delay(Label#label.timestamp,Sum_Delay1)}
+            {Deleted1+1,0}
                                                  end,{Deleted,Sum_Delay},List_Labels),
             %Dict1=orddict:erase(Clock,Dict),%delete all labels with Clock
             deliver_labels(Min_Clock,Rest,Deleted2,Sum_Delay2);
