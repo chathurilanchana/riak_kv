@@ -649,3 +649,8 @@ end
   {datatype, bytesize},
   hidden
 ]}.
+
+{mapping, "clients", "riak_kv.clients", [
+    {datatype, integer},
+      {default, "5"}
+    ]}.

@@ -26,7 +26,7 @@
 
 -define(SERVER, ?MODULE).
 
--record(state, {myname, sequence_id}).
+-record(state, {count, sequence_id}).
 
 test()->
     Status=net_kernel:connect_node('riak@127.0.0.1'), %this is the node where we run global server
@@ -48,9 +48,10 @@ forward_put_to_sequencer(RObj,Options, [Node, ClientId],ReqId,Sender)->
 start_link() ->
     gen_server:start_link({global,riak_kv_optimised_sequencer}, ?MODULE, [riak_kv_optimised_sequencer], []).
 
-init([ServerName]) ->
+init([_ServerName]) ->
     lager:info("optimized sequencer strted ~n"),
-    {ok, #state{myname = ServerName,sequence_id = 0}}.
+    erlang:send_after(30000, self(), print_stats),
+    {ok, #state{count = 0,sequence_id = 0}}.
 
 handle_call({test}, _From,State) ->
     lager:info("request received by server ~n"),
@@ -61,18 +62,24 @@ handle_call(Request, _From, State) ->
     %lager:info("received msg is ~p ~n",[Request]),
     {reply, ok, State}.
 
-handle_cast({put,RObj, _Options,[_Node, _ClientId],ReqId,Sender},State=#state{sequence_id = SequenceId})->
+handle_cast({put,RObj, _Options,[_Node, _ClientId],ReqId,Sender},State=#state{sequence_id = SequenceId,count = Count})->
     BKey = {riak_object:bucket(RObj), riak_object:key(RObj)},
     BucketProps = riak_core_bucket:get_bucket(riak_object:bucket(RObj)),
     DocIdx = riak_core_util:chash_key(BKey, BucketProps),
     Preflist = riak_core_apl:get_primary_apl(DocIdx, 1, riak_kv),
     [{_IndexNode, _Type}] = Preflist,
     Sender!{ReqId,ok},
-    {noreply,State#state{sequence_id = SequenceId+1}};
+    {noreply,State#state{sequence_id = SequenceId+1,count = Count+1}};
 
 handle_cast({test}, State) ->
     lager:info("put request received by server ~n"),
     {noreply, State}.
+
+handle_info(print_stats, State=#state{count=Count}) ->
+    {_,{Hour,Min,Sec}} = erlang:localtime(),
+    lager:info("timestamp ~p: ~p: ~p: added ~n",[Hour,Min,Sec,Count]),
+    erlang:send_after(30000, self(), print_stats),
+    {noreply, State};
 
 handle_info(_Info, State) ->
     {noreply, State}.

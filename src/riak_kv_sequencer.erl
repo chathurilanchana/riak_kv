@@ -26,7 +26,7 @@
 
 -define(SERVER, ?MODULE).
 
--record(state, {myname, sequence_id}).
+-record(state, {count, sequence_id}).
 
 test()->
     Status=net_kernel:connect_node('riak@127.0.0.1'), %this is the node where we run global server
@@ -48,18 +48,19 @@ get_sequence_number()->
 start_link() ->
     gen_server:start_link({global,riak_kv_sequencer}, ?MODULE, [riak_kv_sequencer], []).
 
-init([ServerName]) ->
+init([_ServerName]) ->
     lager:info("optimized sequencer strted ~n"),
-    {ok, #state{myname = ServerName,sequence_id = 0}}.
+    erlang:send_after(30000, self(), print_stats),
+    {ok, #state{count = 0,sequence_id = 0}}.
 
 handle_call({test}, _From,State) ->
     lager:info("request received by server ~n"),
     {reply,ok, State};
 
 
-handle_call({get_sequence_number},_From,State=#state{sequence_id = SequenceId})->
+handle_call({get_sequence_number},_From,State=#state{sequence_id = SequenceId,count = Count})->
     NewSeqId=SequenceId+1,
-    {reply,NewSeqId,State#state{sequence_id = NewSeqId}};
+    {reply,NewSeqId,State#state{sequence_id = NewSeqId,count =Count+1 }};
 
 handle_call(Request, _From, State) ->
     lager:info("received msg is ~p ~n",[Request]),
@@ -69,6 +70,12 @@ handle_call(Request, _From, State) ->
 handle_cast({test}, State) ->
     lager:info("put request received by server ~n"),
     {noreply, State}.
+
+handle_info(print_stats, State=#state{count=Count}) ->
+    {_,{Hour,Min,Sec}} = erlang:localtime(),
+    lager:info("timestamp ~p: ~p: ~p: added ~n",[Hour,Min,Sec,Count]),
+    erlang:send_after(30000, self(), print_stats),
+    {noreply, State};
 
 handle_info(_Info, State) ->
     {noreply, State}.

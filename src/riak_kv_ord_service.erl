@@ -22,7 +22,7 @@
     terminate/2,
     code_change/3]).
 
--export([add_label/1,test/0,partition_heartbeat/2,print_status/0]).
+-export([add_label/2,test/0,partition_heartbeat/2,print_status/0]).
 
 -define(SERVER, ?MODULE).
 
@@ -39,9 +39,9 @@ test()->
     end.
 
 
-add_label(Label)->
+add_label(Label,Client_Id)->
     %lager:info("label is ready to add to the ordeing service  ~p",[Label]),
-    gen_server:cast({global,riak_kv_ord_service},{add_label,Label}).
+    gen_server:cast({global,riak_kv_ord_service},{add_label,Label,Client_Id}).
 
 partition_heartbeat(Partition,Clock)->
     gen_server:cast({global,riak_kv_ord_service},{partition_heartbeat,Clock,Partition}).
@@ -56,35 +56,38 @@ start_link() ->
 
 init([ServerName]) ->
     lager:info("ordering service started"),
-    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    Num_Partitions=riak_core_ring:num_partitions(Ring),
-    lager:info("total partitions are ~p and server name is ~p",[Num_Partitions,ServerName]),
-
-    GrossPrefLists = riak_core_ring:all_preflists(Ring, 1),
-    Dict1 = lists:foldl(fun(PrefList, Dict) ->
-        {Partition, _Node} = hd(PrefList),
-        riak_kv_vnode:heartbeat(PrefList),
-        dict:store(Partition, 0, Dict)
-                        end, dict:new(), GrossPrefLists),
+    ClientCount=app_helper:get_env(riak_kv, clients),
+    lager:info("client_count is ~p ~n",[ClientCount]),
+    Dict1=get_clients(ClientCount,dict:new()),
     lager:info("dictionary size is ~p ~n",[dict:size(Dict1)]),
+    erlang:send_after(30000, self(), print_stats),
     {ok, #state{heartbeats = Dict1,labels = orddict:new(), reg_name = ServerName,added = 0,deleted = 0,sum_delay = 0,highest_delay = 0}}.
 
 
 
-handle_call({trigger},_From, State=#state{added = Added,deleted = _Deleted,sum_delay = _Delay,highest_delay = _Max_Delay}) ->
-    lager:info("added count is ~p ~n",[Added]),
+handle_call({trigger},_From, State=#state{added = Added,deleted = Deleted,sum_delay = Delay,highest_delay = Max_Delay}) ->
+    Delay_Per_Op=Delay div Deleted,
+    lager:info("added count is ~p deleted count is ~p delay-per-op is ~p max-delay is ~p ~n",[Added,Deleted,Delay_Per_Op,Max_Delay]),
     {reply,ok,State};
 
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
 
-handle_cast({add_label,_Label},State=#state{labels = _Labels,heartbeats = _Heartbeats,deleted = _Deleted,sum_delay = _Sum_Delay,highest_delay = _Max_Delay,added=Added})->
-    %lager:info("Label ~p and heartbeat is ~p",[orddict:fetch(Label_Timestamp,Labels1),dict:fetch(Partition,Heartbeats1)]),
-    {noreply,State#state{added=Added+1}};
+handle_cast({add_label,Label,Partition},State=#state{labels = Labels,heartbeats = Heartbeats,added = Added,deleted = Deleted,sum_delay = Sum_Delay,highest_delay = Max_Delay})->
+    %lager:info("received label from ~p ~n",[Partition]),
+    Label_Timestamp=Label#label.timestamp,
+    Labels1=orddict:append(Label_Timestamp,Label,Labels),
+    Heartbeats1= dict:store(Partition,Label_Timestamp,Heartbeats),
+    Max_Delay1=get_max_delay(Labels,Max_Delay),
+    %todo: test functionality of only send heartbeats when no label has sent fix @ vnode
+    {Labels2,Deleted1,Sum_Delay1}=deliver_possible_labels(Labels1,Heartbeats1,Deleted,Sum_Delay),
 
-handle_cast({partition_heartbeat,_Clock,_Partition},State=#state{labels = _Labels,heartbeats = _Heartbeats,deleted = _Deleted,sum_delay = _Sum_Delay,highest_delay = _Max_Delay})->
-    {noreply,State};
+    State1=State#state{labels = Labels2,heartbeats = Heartbeats1,added = Added+1,deleted = Deleted1,sum_delay = Sum_Delay1,highest_delay = Max_Delay1},
+
+    %lager:info("Label ~p and heartbeat is ~p",[orddict:fetch(Label_Timestamp,Labels1),dict:fetch(Partition,Heartbeats1)]),
+    {noreply,State1};
+
 
 handle_cast(_Request, State) ->
     lager:error("received an unexpected  message ~n"),
@@ -99,7 +102,7 @@ handle_info(print_stats, State=#state{added = Added,deleted = Deleted,highest_de
         false->%add_line_to_file(Added,0,Max_Delay,FileName)
             lager:info("timestamp ~p: ~p: ~p: added ~p deleted ~p max-delay ~p ~n",[Hour,Min,Sec,Added,0,Max_Delay])
     end,
-    erlang:send_after(10000, self(), print_stats),
+    erlang:send_after(30000, self(), print_stats),
     {noreply, State};
 
 
@@ -115,3 +118,77 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+get_clients(0,Dict)->Dict;
+
+get_clients(N, Dict) -> if
+                       N>0 ->Dict1=dict:store(N, N, Dict) ,get_clients(N-1,Dict1);
+                       true -> get_clients(0,Dict)
+                   end.
+
+deliver_possible_labels(Labels,Heartbeats,Deleted,Sum_Delay)->
+    Min_Stable_Timestamp=get_stable_timestamp(Heartbeats),
+    deliver_labels(Min_Stable_Timestamp,Labels,Deleted,Sum_Delay).
+
+get_max_delay(Labels,Current_Max_Delay)->
+
+    case(orddict:size(Labels)>0) of
+        true-> Earliest_Ts=get_earliest_label_timestamp(Labels,Current_Max_Delay),
+            New_Max_Delay=riak_kv_util:get_timestamp()-Earliest_Ts,
+
+            case(New_Max_Delay>Current_Max_Delay) of
+                true->New_Max_Delay;
+                false->Current_Max_Delay
+            end;
+        false->Current_Max_Delay
+    end.
+
+get_earliest_label_timestamp([],Current_Max_Delay)->Current_Max_Delay;
+
+get_earliest_label_timestamp(Labels,_Current_Max_Delay)->
+    HB_List=orddict:to_list(Labels),
+    [First|Rest]=HB_List,
+    {Clock,_Label}=First,
+    lists:foldl(fun({Key,_Val},Min)->
+        %lager:info("key is ~p value is ~p ~n",[Key,Val]),
+        if
+            Key<Min-> Key;
+            true -> Min
+        end end,Clock,Rest).
+
+
+get_stable_timestamp(Heartbeats)->
+    HB_List=dict:to_list(Heartbeats),
+    [First|Rest]=HB_List,
+    {_Partition,Clock}=First,
+    lists:foldl(fun({_Key,Val},Min)->
+        %lager:info("key is ~p value is ~p ~n",[Key,Val]),
+        if
+            Val<Min-> Val;
+            true -> Min
+        end end,Clock,Rest).
+
+deliver_labels(_Min_Clock,[],Deleted,Sum_Deay)->{[],Deleted,Sum_Deay};
+
+deliver_labels(Min_Clock,[Head|Rest],Deleted,Sum_Delay)->
+    {Clock,List_Labels}=Head,
+    %lager:info("list label is ~p and min clock is ~p ~n",[List_Labels,Min_Clock]),
+    case (Clock =< Min_Clock) of
+        true-> {Deleted2,Sum_Delay2}=lists:foldl(fun(Label,{Deleted1,Sum_Delay1})->
+            %deliver labels to the other datacenters
+            {Deleted1+1,calculate_sum_delay(Label#label.timestamp,Sum_Delay1)}
+                                                 end,{Deleted,Sum_Delay},List_Labels),
+            %Dict1=orddict:erase(Clock,Dict),%delete all labels with Clock
+            deliver_labels(Min_Clock,Rest,Deleted2,Sum_Delay2);
+        false->{[Head|Rest],Deleted,Sum_Delay}
+    end.
+
+
+calculate_sum_delay(Added_Timestamp,Sum_Delay)->
+    Current_Time=riak_kv_util:get_timestamp(),
+    Diff_in_Msec=(Current_Time-Added_Timestamp) div 1000,
+
+    case (Diff_in_Msec>0) of
+        true->(Sum_Delay+Diff_in_Msec);
+        false->Sum_Delay   %due to clock drifts or non monotonocity
+    end.

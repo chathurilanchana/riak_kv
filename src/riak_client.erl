@@ -45,7 +45,7 @@
 -export([get_client_id/1]).
 -export([for_dialyzer_only_ignore/3]).
 -export([ensemble/1]).
--export([forward_to_sequencer/3,forward_to_old_sequencer/1,forward_to_ordering_service/2,test/0]).
+-export([forward_to_sequencer/3,forward_to_old_sequencer/1,forward_to_ordering_service/3,test/0]).
 
 -compile({no_auto_import,[put/2]}).
 %% @type default_timeout() = 60000
@@ -95,8 +95,8 @@ forward_to_old_sequencer( {?MODULE, [_Node, _ClientId]})->
     SequenceId=riak_kv_sequencer:get_sequence_number(),
     {ok,SequenceId}.
 
-forward_to_ordering_service(Label, {?MODULE, [_Node, _ClientId]})->
-     riak_kv_ord_service:add_label(Label),
+forward_to_ordering_service(Label,ClientId, {?MODULE, [_Node, _ClientId]})->
+     riak_kv_ord_service:add_label(Label,ClientId),
      ok.
 
 wait_for_reply(ReqId,Timeout)->
