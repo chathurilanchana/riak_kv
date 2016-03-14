@@ -119,11 +119,10 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-get_clients(0,Dict)->Dict;
 
 get_clients(N, Dict) -> if
                        N>0 ->Dict1=dict:store(N,0, Dict) ,get_clients(N-1,Dict1);
-                       true -> get_clients(0,Dict)
+                       true -> Dict
                    end.
 
 deliver_possible_labels(Labels,Heartbeats,Deleted,Sum_Delay)->
