@@ -122,7 +122,7 @@ code_change(_OldVsn, State, _Extra) ->
 get_clients(0,Dict)->Dict;
 
 get_clients(N, Dict) -> if
-                       N>0 ->Dict1=dict:store(N, N, Dict) ,get_clients(N-1,Dict1);
+                       N>0 ->Dict1=dict:store(N,0, Dict) ,get_clients(N-1,Dict1);
                        true -> get_clients(0,Dict)
                    end.
 
