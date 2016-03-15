@@ -31,7 +31,7 @@
 -export([start_link/0]).
 -export([init/1]).
 
--export([start_ordering_service/0,stop_ordering_service/1,start_optimised_sequencer/0,start_old_sequencer/0]).
+-export([start_ordering_service/0,stop_ordering_service/1,start_optimised_sequencer/0,start_old_sequencer/0,start_ordering_service_ets/0]).
 
 -define (IF (Bool, A, B), if Bool -> A; true -> B end).
 
@@ -134,14 +134,21 @@ start_optimised_sequencer()->
         permanent, 5000, worker, [riak_kv_optimised_sequencer]}).
 
 
+start_ordering_service_ets()->
+    lager:info("supervisor starting the ordering service ets"),
+    supervisor:start_child(?MODULE,{riak_kv_ord_service_ets,
+        {riak_kv_ord_service_ets, start_link, []},
+        permanent, 5000, worker, [riak_kv_ord_service_ets]}).
+
+
 start_ordering_service()->
-    lager:info("supervisor starting the optimised sequencer"),
+    lager:info("supervisor starting the ordering service normal"),
     supervisor:start_child(?MODULE,{riak_kv_ord_service,
                 {riak_kv_ord_service, start_link, []},
                 permanent, 5000, worker, [riak_kv_ord_service]}).
 
 start_old_sequencer()->
-    lager:info("supervisor starting the optimised sequencer"),
+    lager:info("supervisor starting the old sequencer"),
     supervisor:start_child(?MODULE,{riak_kv_sequencer,
         {riak_kv_sequencer, start_link, []},
         permanent, 5000, worker, [riak_kv_sequencer]}).

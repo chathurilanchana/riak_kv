@@ -74,16 +74,16 @@ handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
 
-handle_cast({add_label,Label,Partition},State=#state{labels = Labels,heartbeats = Heartbeats,added = Added,deleted = Deleted,sum_delay = Sum_Delay,highest_delay = _Max_Delay})->
+handle_cast({add_label,Label,Partition},State=#state{labels = Labels,heartbeats = Heartbeats,added = Added,deleted = Deleted,sum_delay = Sum_Delay,highest_delay = Max_Delay})->
     %lager:info("received label from ~p ~n",[Partition]),
     Label_Timestamp=Label#label.timestamp,
     Labels1=orddict:append(Label_Timestamp,Label,Labels),
     Heartbeats1= dict:store(Partition,Label_Timestamp,Heartbeats),
-    %Max_Delay1=get_max_delay(Labels,Max_Delay),
+    Max_Delay1=get_max_delay(Labels,Max_Delay),
     %todo: test functionality of only send heartbeats when no label has sent fix @ vnode
     {Labels2,Deleted1,Sum_Delay1}=deliver_possible_labels(Labels1,Heartbeats1,Deleted,Sum_Delay),
 
-    State1=State#state{labels = Labels2,heartbeats = Heartbeats1,added = Added+1,deleted = Deleted1,sum_delay = Sum_Delay1},
+    State1=State#state{labels = Labels2,heartbeats = Heartbeats1,added = Added+1,deleted = Deleted1,sum_delay = Sum_Delay1,highest_delay = Max_Delay1},
 
     %lager:info("Label ~p and heartbeat is ~p",[orddict:fetch(Label_Timestamp,Labels1),dict:fetch(Partition,Heartbeats1)]),
     {noreply,State1};
@@ -119,15 +119,42 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
+get_clients(0,Dict)->Dict;
 
 get_clients(N, Dict) -> if
-                       N>0 ->Dict1=dict:store(N,0, Dict) ,get_clients(N-1,Dict1);
-                       true -> Dict
+                       N>0 ->Dict1=dict:store(N, N, Dict) ,get_clients(N-1,Dict1);
+                       true -> get_clients(0,Dict)
                    end.
 
 deliver_possible_labels(Labels,Heartbeats,Deleted,Sum_Delay)->
     Min_Stable_Timestamp=get_stable_timestamp(Heartbeats),
     deliver_labels(Min_Stable_Timestamp,Labels,Deleted,Sum_Delay).
+
+get_max_delay(Labels,Current_Max_Delay)->
+
+    case(orddict:size(Labels)>0) of
+        true-> Earliest_Ts=get_earliest_label_timestamp(Labels,Current_Max_Delay),
+            New_Max_Delay=riak_kv_util:get_timestamp()-Earliest_Ts,
+
+            case(New_Max_Delay>Current_Max_Delay) of
+                true->New_Max_Delay;
+                false->Current_Max_Delay
+            end;
+        false->Current_Max_Delay
+    end.
+
+get_earliest_label_timestamp([],Current_Max_Delay)->Current_Max_Delay;
+
+get_earliest_label_timestamp(Labels,_Current_Max_Delay)->
+    HB_List=orddict:to_list(Labels),
+    [First|Rest]=HB_List,
+    {Clock,_Label}=First,
+    lists:foldl(fun({Key,_Val},Min)->
+        %lager:info("key is ~p value is ~p ~n",[Key,Val]),
+        if
+            Key<Min-> Key;
+            true -> Min
+        end end,Clock,Rest).
 
 
 get_stable_timestamp(Heartbeats)->
@@ -147,9 +174,9 @@ deliver_labels(Min_Clock,[Head|Rest],Deleted,Sum_Delay)->
     {Clock,List_Labels}=Head,
     %lager:info("list label is ~p and min clock is ~p ~n",[List_Labels,Min_Clock]),
     case (Clock =< Min_Clock) of
-        true-> {Deleted2,Sum_Delay2}=lists:foldl(fun(_Label,{Deleted1,_Sum_Delay1})->
+        true-> {Deleted2,Sum_Delay2}=lists:foldl(fun(Label,{Deleted1,Sum_Delay1})->
             %deliver labels to the other datacenters
-            {Deleted1+1,0}
+            {Deleted1+1,calculate_sum_delay(Label#label.timestamp,Sum_Delay1)}
                                                  end,{Deleted,Sum_Delay},List_Labels),
             %Dict1=orddict:erase(Clock,Dict),%delete all labels with Clock
             deliver_labels(Min_Clock,Rest,Deleted2,Sum_Delay2);
@@ -157,11 +184,11 @@ deliver_labels(Min_Clock,[Head|Rest],Deleted,Sum_Delay)->
     end.
 
 
-%calculate_sum_delay(Added_Timestamp,Sum_Delay)->
- %   Current_Time=riak_kv_util:get_timestamp(),
-  %  Diff_in_Msec=(Current_Time-Added_Timestamp) div 1000,
+calculate_sum_delay(Added_Timestamp,Sum_Delay)->
+    Current_Time=riak_kv_util:get_timestamp(),
+    Diff_in_Msec=(Current_Time-Added_Timestamp) div 1000,
 
-   % case (Diff_in_Msec>0) of
-    %    true->(Sum_Delay+Diff_in_Msec);
-     %   false->Sum_Delay   %due to clock drifts or non monotonocity
-    %end.
+    case (Diff_in_Msec>0) of
+        true->(Sum_Delay+Diff_in_Msec);
+        false->Sum_Delay   %due to clock drifts or non monotonocity
+    end.

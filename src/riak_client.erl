@@ -96,7 +96,7 @@ forward_to_old_sequencer( {?MODULE, [_Node, _ClientId]})->
     {ok,SequenceId}.
 
 forward_to_ordering_service(Label,ClientId, {?MODULE, [_Node, _ClientId]})->
-     riak_kv_ord_service:add_label(Label,ClientId),
+     riak_kv_ord_service_ets:add_label(Label,ClientId),
      ok.
 
 wait_for_reply(ReqId,Timeout)->
