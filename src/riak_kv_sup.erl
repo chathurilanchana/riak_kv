@@ -31,7 +31,7 @@
 -export([start_link/0]).
 -export([init/1]).
 
--export([start_ordering_service/0,stop_ordering_service/1,start_optimised_sequencer/0,start_old_sequencer/0,start_ordering_service_ets/0]).
+-export([start_ordering_service/0,stop_ordering_service/1,start_optimised_sequencer/0,start_old_sequencer/0,start_ordering_service_ets/0,start_ordering_service_gbtree/0]).
 
 -define (IF (Bool, A, B), if Bool -> A; true -> B end).
 
@@ -139,6 +139,12 @@ start_ordering_service_ets()->
     supervisor:start_child(?MODULE,{riak_kv_ord_service_ets,
         {riak_kv_ord_service_ets, start_link, []},
         permanent, 5000, worker, [riak_kv_ord_service_ets]}).
+
+start_ordering_service_gbtree()->
+    lager:info("supervisor starting the ordering service normal"),
+    supervisor:start_child(?MODULE,{riak_kv_ord_service_gbtree,
+        {riak_kv_ord_service_gbtree, start_link, []},
+        permanent, 5000, worker, [riak_kv_ord_service_gbtree]}).
 
 
 start_ordering_service()->

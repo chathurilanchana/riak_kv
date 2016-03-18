@@ -76,9 +76,11 @@ handle_call(_Request, _From, State) ->
 
 handle_cast({add_label,Label,Partition},State=#state{labels = Labels,heartbeats = Heartbeats,added = Added,deleted = Deleted,sum_delay = Sum_Delay,highest_delay = _Max_Delay})->
     %lager:info("received label from ~p ~n",[Partition]),
+    Old_Value=dict:fetch(Partition, Heartbeats),
     Label_Timestamp=Label#label.timestamp,
+    UpdatedMaxTS=max(Old_Value,Label_Timestamp),
     Labels1=orddict:append(Label_Timestamp,Label,Labels),
-    Heartbeats1= dict:store(Partition,Label_Timestamp,Heartbeats),
+    Heartbeats1= dict:store(Partition,UpdatedMaxTS,Heartbeats),
     %todo: test functionality of only send heartbeats when no label has sent fix @ vnode
     {Labels2,Deleted1,Sum_Delay1}=deliver_possible_labels(Labels1,Heartbeats1,Deleted,Sum_Delay),
 
