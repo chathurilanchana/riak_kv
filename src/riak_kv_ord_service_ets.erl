@@ -61,12 +61,18 @@ start_link() ->
 
 init([ServerName]) ->
     lager:info("ordering service started"),
+    %{X,Y} =erlang:process_info(global:whereis_name(riak_kv_ord_service_ets), memory),
+    %lager:info("ordering service started ~p ~p ~n",[X,Y]),
+    %process_flag(min_heap_size, 100000),
+     %memsup:set_procmem_high_watermark(0.8),
+    %{P,Q} =erlang:process_info(global:whereis_name(riak_kv_ord_service_ets), memory),
+   % lager:info("after memory is ~p ~p ~n",[P,Q]),
     ClientCount=app_helper:get_env(riak_kv, clients),
     lager:info("client_count is ~p ~n",[ClientCount]),
     Dict1=get_clients(ClientCount,dict:new()),
     lager:info("dictionary size is ~p ~n",[dict:size(Dict1)]),
-    erlang:send_after(30000, self(), print_stats),
-    ets:new(?Label_Table_Name, [duplicate_bag, named_table]),
+    erlang:send_after(1, self(), print_stats),
+    ets:new(?Label_Table_Name, [duplicate_bag, named_table,private]),
     {ok, #state{heartbeats = Dict1, reg_name = ServerName,added = 0,deleted = 0}}.
 
 
@@ -80,16 +86,16 @@ handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
 
-handle_cast({add_label,Label,Partition},State=#state{heartbeats = Heartbeats,added = Added,deleted = Deleted})->
-    %lager:info("received label from ~p ~n",[Partition]),
+handle_cast({add_label,Label,Partition},State=#state{heartbeats = Heartbeats,added = Added,deleted = Deleted1})->
+   % lager:info("received label from ~p ~n",[Partition]),
     Label_Timestamp=Label#label.timestamp,
     ets:insert(?Label_Table_Name,{Label_Timestamp,Label}),
     Heartbeats1= dict:store(Partition,Label_Timestamp,Heartbeats),
     %todo: test functionality of only send heartbeats when no label has sent fix @ vnode
-    Deleted1=deliver_possible_labels(Heartbeats1,Deleted),
+    %Deleted1=deliver_possible_labels(Heartbeats1,Deleted),
 
     State1=State#state{heartbeats = Heartbeats1,added = Added+1,deleted = Deleted1},
-
+   %lager:info("after delivery"),
     %lager:info("Label ~p and heartbeat is ~p",[orddict:fetch(Label_Timestamp,Labels1),dict:fetch(Partition,Heartbeats1)]),
     {noreply,State1};
 
@@ -98,17 +104,18 @@ handle_cast(_Request, State) ->
     lager:error("received an unexpected  message ~n"),
     {noreply, State}.
 
-handle_info(print_stats, State=#state{added = Added,deleted = Deleted}) ->
+handle_info(print_stats, State=#state{added = Added,deleted = Deleted,heartbeats = Heartbeats1}) ->
     {_,{Hour,Min,Sec}} = erlang:localtime(),
+    Deleted1=deliver_possible_labels(Heartbeats1,Deleted),
     case (State#state.deleted>0) of
         true->
             %add_line_to_file(Added,Deleted,Max_Delay,FileName);
-            lager:info("timestamp ~p: ~p: ~p: added ~p deleted ~p ~n",[Hour,Min,Sec,Added,Deleted]);
+            lager:info("timestamp ~p: ~p: ~p: added ~p deleted ~p ~n",[Hour,Min,Sec,Added,Deleted1]);
         false->%add_line_to_file(Added,0,Max_Delay,FileName)
-            lager:info("timestamp ~p: ~p: ~p: added ~p deleted ~p  ~n",[Hour,Min,Sec,Added,0])
+            lager:info("timestamp ~p: ~p: ~p: added ~p deleted ~p  ~n",[Hour,Min,Sec,Added,Deleted1])
     end,
-    erlang:send_after(30000, self(), print_stats),
-    {noreply, State};
+    erlang:send_after(1, self(), print_stats),
+    {noreply, State#state{deleted=Deleted1}};
 
 
 handle_info(_Info, State) ->
@@ -163,4 +170,6 @@ deliver_labels(Min_Clock,Deleted)->
     Begin_Table_Size=ets:info(?Label_Table_Name,size),
     ets:select_delete(?Label_Table_Name,  ets:fun2ms(fun({X,_Y}) when (X =< Min_Clock)-> true end)),
     After_Table_Size=ets:info(?Label_Table_Name,size),
+    lager:info("current size is ~p ~n",[After_Table_Size]),
     Deleted+(Begin_Table_Size-After_Table_Size).
+  
