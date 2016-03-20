@@ -27,7 +27,7 @@
     terminate/2,
     code_change/3]).
 
--export([add_label/2,test/0,partition_heartbeat/2,print_status/0]).
+-export([add_label/3,test/0,partition_heartbeat/2,print_status/0]).
 
 -define(SERVER, ?MODULE).
 
@@ -44,9 +44,9 @@ test()->
     end.
 
 
-add_label(Label,Client_Id)->
+add_label(Label,Client_Id,MaxTS)->
     %lager:info("label is ready to add to the ordeing service  ~p",[Label]),
-    gen_server:cast({global,riak_kv_ord_service_ets_ordered},{add_label,Label,Client_Id}).
+    gen_server:cast({global,riak_kv_ord_service_ets_ordered},{add_label,Label,Client_Id,MaxTS}).
 
 partition_heartbeat(Partition,Clock)->
     gen_server:cast({global,riak_kv_ord_service_ets_ordered},{partition_heartbeat,Clock,Partition}).
@@ -61,17 +61,17 @@ start_link() ->
 
 init([ServerName]) ->
     lager:info("ordering service started"),
-    %{X,Y} =erlang:process_info(global:whereis_name(riak_kv_ord_service_ets), memory),
-    %lager:info("ordering service started ~p ~p ~n",[X,Y]),
-    %process_flag(min_heap_size, 100000),
-    %memsup:set_procmem_high_watermark(0.8),
+    {X,Y} =erlang:process_info(global:whereis_name(riak_kv_ord_service_ets_ordered), memory),
+    lager:info("ordering service started ~p ~p ~n",[X,Y]),
+    process_flag(min_heap_size, 100000),
+    memsup:set_procmem_high_watermark(0.6),
     {P,Q} =erlang:process_info(global:whereis_name(riak_kv_ord_service_ets_ordered), memory),
     lager:info("after memory is ~p ~p ~n",[P,Q]),
     ClientCount=app_helper:get_env(riak_kv, clients),
     lager:info("client_count is ~p ~n",[ClientCount]),
     Dict1=get_clients(ClientCount,dict:new()),
     lager:info("dictionary size is ~p ~n",[dict:size(Dict1)]),
-    erlang:send_after(1, self(), print_stats),
+    erlang:send_after(10000, self(), print_stats),
     ets:new(?Label_Table_Name, [ordered_set, named_table,private]),
     {ok, #state{heartbeats = Dict1, reg_name = ServerName,added = 0,deleted = 0}}.
 
@@ -86,15 +86,14 @@ handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
 
-handle_cast({add_label,Label,Partition},State=#state{heartbeats = Heartbeats,added = Added,deleted = Deleted})->
+handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = Heartbeats,added = Added,deleted = Deleted})->
     % lager:info("received label from ~p ~n",[Partition]),
-    Label_Timestamp=Label#label.timestamp,
-    ets:insert(?Label_Table_Name,{{Label_Timestamp,Partition},Label}),
-    Heartbeats1= dict:store(Partition,Label_Timestamp,Heartbeats),
+    Added1=insert_batch_labels(BatchedLabels,Partition,Added),
+    Heartbeats1= dict:store(Partition,MaxTS,Heartbeats),
     %todo: test functionality of only send heartbeats when no label has sent fix @ vnode
     Deleted1=deliver_possible_labels(Heartbeats1,Deleted),
 
-    State1=State#state{heartbeats = Heartbeats1,added = Added+1,deleted = Deleted1},
+    State1=State#state{heartbeats = Heartbeats1,added = Added1,deleted = Deleted1},
     %lager:info("after delivery"),
     %lager:info("Label ~p and heartbeat is ~p",[orddict:fetch(Label_Timestamp,Labels1),dict:fetch(Partition,Heartbeats1)]),
     {noreply,State1};
@@ -130,11 +129,10 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-get_clients(0,Dict)->Dict;
 
 get_clients(N, Dict) -> if
-                            N>0 ->Dict1=dict:store(N, N, Dict) ,get_clients(N-1,Dict1);
-                            true -> get_clients(0,Dict)
+                            N>0 ->Dict1=dict:store(N, 0, Dict) ,get_clients(N-1,Dict1);
+                            true ->Dict
                         end.
 
 deliver_possible_labels(Heartbeats,Deleted)->
@@ -153,6 +151,13 @@ deliver_possible_labels(Heartbeats,Deleted)->
 %   end;
 %false->Current_Max_Delay
 %end.
+
+insert_batch_labels([],_Partition,Added)->Added;
+
+insert_batch_labels([Head|Rest],Partition,Added)->
+    Label_Timestamp=Head#label.timestamp,
+    ets:insert(?Label_Table_Name,{{Label_Timestamp,Partition},Head}),
+    insert_batch_labels(Rest,Partition,Added+1).
 
 get_stable_timestamp(Heartbeats)->
     HB_List=dict:to_list(Heartbeats),

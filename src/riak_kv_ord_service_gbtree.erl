@@ -21,7 +21,7 @@
     terminate/2,
     code_change/3]).
 
--export([add_label/2,test/0,partition_heartbeat/2,print_status/0]).
+-export([add_label/3,test/0,partition_heartbeat/2,print_status/0]).
 
 -define(SERVER, ?MODULE).
 
@@ -38,9 +38,9 @@ test()->
     end.
 
 
-add_label(Label,Client_Id)->
+add_label(Label,Client_Id,MaxTS)->
     %lager:info("label is ready to add to the ordeing service  ~p",[Label]),
-    gen_server:cast({global,riak_kv_ord_service_gbtree},{add_label,Label,Client_Id}).
+    gen_server:cast({global,riak_kv_ord_service_gbtree},{add_label,Label,Client_Id,MaxTS}).
 
 partition_heartbeat(Partition,Clock)->
     gen_server:cast({global,riak_kv_ord_service_gbtree},{partition_heartbeat,Clock,Partition}).
@@ -72,15 +72,16 @@ handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
 
-handle_cast({add_label,Label,Partition},State=#state{labels = Labels,heartbeats = Heartbeats,added = Added,deleted = Deleted})->
+handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{labels = Labels,heartbeats = Heartbeats,added = Added,deleted = Deleted})->
     %lager:info("received label from ~p ~n",[Partition]),
-    Label_Timestamp=Label#label.timestamp,
-    Labels1= gb_trees:insert({Label_Timestamp,Partition},Label,Labels),
-    Heartbeats1= dict:store(Partition,Label_Timestamp,Heartbeats),
+    %Label_Timestamp=Label#label.timestamp,
+    %Labels1= gb_trees:insert({Label_Timestamp,Partition},Label,Labels),
+    {Labels1,Added1}=    insert_batch_labels(BatchedLabels,Partition,Labels,Added),
+    Heartbeats1= dict:store(Partition,MaxTS,Heartbeats),
     %todo: test functionality of only send heartbeats when no label has sent fix @ vnode
     {Labels2,Deleted1}=deliver_possible_labels(Labels1,Heartbeats1,Deleted),
 
-    State1=State#state{labels = Labels2,heartbeats = Heartbeats1,added = Added+1,deleted = Deleted1},
+    State1=State#state{labels = Labels2,heartbeats = Heartbeats1,added = Added1,deleted = Deleted1},
 
     %lager:info("Label ~p and heartbeat is ~p",[orddict:fetch(Label_Timestamp,Labels1),dict:fetch(Partition,Heartbeats1)]),
     {noreply,State1};
@@ -120,6 +121,14 @@ get_clients(N, Dict) -> if
                             N>0 ->Dict1=dict:store(N, 0, Dict) ,get_clients(N-1,Dict1);
                             true ->Dict
                         end.
+
+insert_batch_labels([],_Partition,Labels,Added)->{Labels,Added};
+
+insert_batch_labels([Head|Rest],Partition,Labels,Added)->
+    Label_Timestamp=Head#label.timestamp,
+    Labels1= gb_trees:insert({Label_Timestamp,Partition},Head,Labels),
+    insert_batch_labels(Rest,Partition,Labels1,Added+1).
+
 
 deliver_possible_labels(Labels,Heartbeats,Deleted)->
     Min_Stable_Timestamp=get_stable_timestamp(Heartbeats),
