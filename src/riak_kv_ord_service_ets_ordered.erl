@@ -78,7 +78,6 @@ init([ServerName]) ->
 
 
 handle_call({trigger},_From, State=#state{added = Added,deleted = Deleted}) ->
-
     lager:info("added count is ~p deleted count is ~p ~n",[Added,Deleted]),
     {reply,ok,State};
 
@@ -105,13 +104,7 @@ handle_cast(_Request, State) ->
 
 handle_info(print_stats, State=#state{added = Added,deleted = Deleted}) ->
     {_,{Hour,Min,Sec}} = erlang:localtime(),
-    case (State#state.deleted>0) of
-        true->
-            %add_line_to_file(Added,Deleted,Max_Delay,FileName);
-            lager:info("timestamp ~p: ~p: ~p: added ~p deleted ~p ~n",[Hour,Min,Sec,Added,Deleted]);
-        false->%add_line_to_file(Added,0,Max_Delay,FileName)
-            lager:info("timestamp ~p: ~p: ~p: added ~p deleted ~p  ~n",[Hour,Min,Sec,Added,Deleted])
-    end,
+    lager:info("timestamp ~p: ~p: ~p: added ~p deleted ~p ~n",[Hour,Min,Sec,Added,Deleted]);
     erlang:send_after(10000, self(), print_stats),
     {noreply, State};
 
