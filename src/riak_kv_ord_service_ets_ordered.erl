@@ -175,5 +175,4 @@ deliver_labels(Min_Stable_Timestamp,Deleted)->
         '$end_of_table' -> Deleted;
         {Timestamp,Partition} when Timestamp=<Min_Stable_Timestamp ->ets:delete(?Label_Table_Name,{Timestamp,Partition}),deliver_labels(Min_Stable_Timestamp,Deleted+1);
         {_Timestamp,_Partition}->Deleted
-
     end.
