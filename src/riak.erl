@@ -104,19 +104,26 @@ client_connect(Node, ClientId= <<_:32>>) ->
             %% or the new vnode based vclocks should be used.
             %% N.B. all nodes must be upgraded to 1.0 before
             %% this can be enabled.
+            Ordering_Service_Nodes=getOrderingServiceNodes(Node),
+
             case vnode_vclocks(Node) of
                 {badrpc, _Reason} ->
                     {error, {could_not_reach_node, Node}};
                 true ->
-                    {ok, riak_client:new(Node, undefined)};
+                    {ok,Ordering_Service_Nodes, riak_client:new(Node, undefined)};
                 _ ->
-                    {ok, riak_client:new(Node, ClientId)}
+                    {ok,Ordering_Service_Nodes, riak_client:new(Node, ClientId)}
             end
     end;
 client_connect(Node, undefined) ->
     client_connect(Node, riak_core_util:mkclientid(Node));
 client_connect(Node, Other) ->
     client_connect(Node, <<(erlang:phash2(Other)):32>>).
+
+getOrderingServiceNodes(Node)->
+    rpc:call(Node, app_helper, get_env,
+        [riak_kv, ord_service_replicas]).
+
 
 vnode_vclocks(Node) ->
     case rpc:call(Node, riak_core_capability, get,

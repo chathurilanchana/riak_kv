@@ -31,7 +31,9 @@
 -export([start_link/0]).
 -export([init/1]).
 
--export([start_ordering_service/0,stop_ordering_service/1,start_optimised_sequencer/0,start_old_sequencer/0,start_ordering_service_ets/0,start_ordering_service_gbtree/0,start_ordering_service_ets_ordered/0]).
+-export([start_ordering_service/0,stop_ord_work/0,start_optimised_sequencer/0,start_old_sequencer/0,
+    start_ordering_service_ets/0,start_ordering_service_gbtree/0,start_ordering_service_ets_ordered/0,
+    start_ord_service_failure_detector/0]).
 
 -define (IF (Bool, A, B), if Bool -> A; true -> B end).
 
@@ -150,7 +152,15 @@ start_ordering_service_ets_ordered()->
     lager:info("supervisor starting the ordering service normal"),
     supervisor:start_child(?MODULE,{riak_kv_ord_service_ets_ordered,
         {riak_kv_ord_service_ets_ordered, start_link, []},
-        permanent, 5000, worker, [riak_kv_ord_service_ets_ordered]}).
+        temporary, 5000, worker, [riak_kv_ord_service_ets_ordered]}).
+
+
+start_ord_service_failure_detector()->
+    lager:info("Starting the failure detector ~n"),
+    supervisor:start_child(?MODULE,{riak_kv_ord_service_failure_detector,
+        {riak_kv_ord_service_failure_detector, start_link, []},
+        temporary, 5000, worker, [riak_kv_ord_service_failure_detector]}).
+
 
 start_ordering_service()->
     lager:info("supervisor starting the ordering service normal"),
@@ -164,9 +174,9 @@ start_old_sequencer()->
         {riak_kv_sequencer, start_link, []},
         permanent, 5000, worker, [riak_kv_sequencer]}).
 
-stop_ordering_service(Pid)->
-    supervisor:terminate_child(?MODULE,Pid).
-
+stop_ord_work()->
+    riak_kv_ord_service_failure_detector:stop(),
+    riak_kv_ord_service_ets_ordered:stop().
 
 %% Internal functions
 read_js_pool_size(Entry, PoolType) ->

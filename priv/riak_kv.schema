@@ -650,6 +650,27 @@ end
   hidden
 ]}.
 
+{mapping, "myid", "riak_kv.myid", [
+    {datatype, integer},
+    {default,1}
+]}.
+
+
+{mapping, "ord_service_replicas", "riak_kv.ord_service_replicas", [
+    {datatype, integer},
+    {default,2}
+]}.
+
+{mapping, "retry_count", "riak_kv.retry_count", [
+    {datatype, integer},
+    {default,1}
+]}.
+
+{mapping, "ord_service_fd_hb_interval", "riak_kv.ord_service_fd_hb_interval", [
+    {datatype, integer},
+    {default,100}
+]}.
+
 {mapping, "clients", "riak_kv.clients", [
     {datatype, integer},
       {default, "5"}

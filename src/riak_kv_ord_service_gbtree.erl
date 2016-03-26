@@ -54,7 +54,13 @@ start_link() ->
     gen_server:start_link({global,riak_kv_ord_service_gbtree}, ?MODULE, [riak_kv_ord_service_gbtree], []).
 
 init([ServerName]) ->
-    lager:info("ordering service with gbtree started"),
+    lager:info("ordering service started"),
+    {X,Y} =erlang:process_info(global:whereis_name(riak_kv_ord_service_ets_ordered), memory),
+    lager:info("ordering service started ~p ~p ~n",[X,Y]),
+    process_flag(min_heap_size, 100000),
+    memsup:set_procmem_high_watermark(0.6),
+    {P,Q} =erlang:process_info(global:whereis_name(riak_kv_ord_service_ets_ordered), memory),
+    lager:info("after memory is ~p ~p ~n",[P,Q]),
     ClientCount=app_helper:get_env(riak_kv, clients),
     lager:info("client_count is ~p ~n",[ClientCount]),
     Dict1=get_clients(ClientCount,dict:new()),

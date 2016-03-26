@@ -45,7 +45,7 @@
 -export([get_client_id/1]).
 -export([for_dialyzer_only_ignore/3]).
 -export([ensemble/1]).
--export([forward_to_sequencer/3,forward_to_old_sequencer/1,forward_to_ordering_service/4,test/0]).
+-export([forward_to_sequencer/3,forward_to_old_sequencer/1,forward_to_ordering_service/5,test/0]).
 
 -compile({no_auto_import,[put/2]}).
 %% @type default_timeout() = 60000
@@ -95,9 +95,16 @@ forward_to_old_sequencer( {?MODULE, [_Node, _ClientId]})->
     SequenceId=riak_kv_sequencer:get_sequence_number(),
     {ok,SequenceId}.
 
-forward_to_ordering_service(Label,ClientId,MaxTS, {?MODULE, [_Node, _ClientId]})->
-     riak_kv_ord_service_ets_ordered:add_label(Label,ClientId,MaxTS),
-     ok.
+forward_to_ordering_service(Label,ClientId,MaxTS,Ordering_Service_Nodes, {?MODULE, [_Node, _ClientId]})->
+    add_labels_to_ordering_service_replicas(Ordering_Service_Nodes,Label,ClientId,MaxTS).
+
+add_labels_to_ordering_service_replicas([],_Label,_ClientId,_MaxTS)->
+    ok;
+
+add_labels_to_ordering_service_replicas([Head|Rest],Label,ClientId,MaxTS)->
+    io:format("head is ~p ~n",[Head]),
+    riak_kv_ord_service_ets_ordered:add_label(Head,Label,ClientId,MaxTS),
+    add_labels_to_ordering_service_replicas(Rest,Label,ClientId,MaxTS).
 
 wait_for_reply(ReqId,Timeout)->
     % io:format("waiting for reply node is ~p cookie is ~p ~n",[node(),erlang:get_cookie()]),
