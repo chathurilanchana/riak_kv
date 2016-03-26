@@ -31,7 +31,7 @@
 
 -define(SERVER, ?MODULE).
 
--record(state, {heartbeats,reg_name,added,deleted,is_primary,deleted_by_me,current_min_stable}).
+-record(state, {heartbeats,reg_name,added,deleted,is_primary,deleted_by_me,current_min_stable,primary_name}).
 
 check_ready() ->
     MyId=app_helper:get_env(riak_kv, myid),
