@@ -129,7 +129,7 @@ handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = 
             Heartbeats1= dict:store(Partition,MaxTS,Heartbeats),
             %todo: test functionality of only send heartbeats when no label has sent fix @ vnode
             case (IsPrimary) of
-                true -> lager:info("I'm the primary"),
+                true -> %lager:info("I'm the primary"),
                     {Deleted1,New_Stable_TS}=deliver_possible_labels(Heartbeats1,Deleted),
                     Deleted_By_Me1=Deleted_By_Me+(Deleted1-Deleted),
                     case New_Stable_TS>Current_Stable of
