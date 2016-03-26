@@ -102,7 +102,7 @@ add_labels_to_ordering_service_replicas([],_Label,_ClientId,_MaxTS)->
     ok;
 
 add_labels_to_ordering_service_replicas([Head|Rest],Label,ClientId,MaxTS)->
-    io:format("head is ~p ~n",[Head]),
+    %io:format("head is ~p ~n",[Head]),
     riak_kv_ord_service_ets_ordered:add_label(Head,Label,ClientId,MaxTS),
     add_labels_to_ordering_service_replicas(Rest,Label,ClientId,MaxTS).
 
