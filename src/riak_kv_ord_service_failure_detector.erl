@@ -142,7 +142,7 @@ send_heartbeats([Head|Rest],HB_List,MyRegName,Retry_count)->
 repeat_heartbeats(Head,HB_List,Retry_count)->
     case Retry_count of
         0->    lists:delete(Head,HB_List);
-        true-> Result=riak_kv_ord_service_ets_ordered:check_node_up(Head),
+        _-> Result=riak_kv_ord_service_ets_ordered:check_node_up(Head),
             case Result of
                 ok->HB_List;
                 timeout->lager:info("ordering service ~p is not responding ~n",[Head]),
