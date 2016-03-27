@@ -154,14 +154,15 @@ get_primary(ListReplicas)->[Head|_Rest]=lists:sort(ListReplicas),
                            Head.
 
 %to become the primary, we need to have majority of other replicas
-is_primary(My_Ord_Reg_name,Primary,Original_Other_Replica_Count,Remaining_Replica_Count)->
-    case Original_Other_Replica_Count of
-        1->string:equal(My_Ord_Reg_name,Primary);
-        _->case (Remaining_Replica_Count+1)>(Original_Other_Replica_Count/2) of
-               true->string:equal(My_Ord_Reg_name,Primary);
-               _->    false
-           end
-    end.
+is_primary(My_Ord_Reg_name,Primary,_Original_Other_Replica_Count,_Remaining_Replica_Count)->
+   string:equal(My_Ord_Reg_name,Primary).
+   % case Original_Other_Replica_Count of
+      %  1->string:equal(My_Ord_Reg_name,Primary);
+       % _->case (Remaining_Replica_Count+1)>(Original_Other_Replica_Count/2) of
+        %       true->string:equal(My_Ord_Reg_name,Primary);
+        %       _->    false
+        %   end
+  %  end.
 
 notify_stable_to_other_replicas([],_Stable_TS,_Primary_Name)->noop;
 
