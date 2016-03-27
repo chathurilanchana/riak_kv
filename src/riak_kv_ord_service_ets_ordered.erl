@@ -104,7 +104,7 @@ handle_cast(_Request, State) ->
 
 handle_info(print_stats, State=#state{added = Added,deleted = Deleted}) ->
     {_,{Hour,Min,Sec}} = erlang:localtime(),
-    lager:info("timestamp ~p: ~p: ~p: added ~p deleted ~p ~n",[Hour,Min,Sec,Added,Deleted]);
+    lager:info("timestamp ~p: ~p: ~p: added ~p deleted ~p ~n",[Hour,Min,Sec,Added,Deleted]),
     erlang:send_after(10000, self(), print_stats),
     {noreply, State};
 
