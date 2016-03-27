@@ -92,7 +92,7 @@ init([ServerName]) ->
     lager:info("client_count is ~p ~n",[ClientCount]),
     Dict1=get_clients(ClientCount,dict:new()),
     lager:info("dictionary size is ~p ~n",[dict:size(Dict1)]),
-    erlang:send_after(30000, self(), print_stats),
+    erlang:send_after(10000, self(), print_stats),
     ets:new(?Label_Table_Name, [ordered_set, named_table,private]),
     {ok, #state{heartbeats = Dict1, reg_name = ServerName,added = 0,deleted = 0,is_primary = false,deleted_by_me = 0,current_min_stable = 0}}.
 
@@ -159,7 +159,7 @@ handle_cast(_Request, State) ->
 handle_info(print_stats, State=#state{added = Added,deleted = Deleted,deleted_by_me = Deleted_By_Me}) ->
     {_,{Hour,Min,Sec}} = erlang:localtime(),
     lager:info("timestamp ~p: ~p: ~p: added ~p deleted ~p deleted-by-me ~p ~n",[Hour,Min,Sec,Added,Deleted,Deleted_By_Me]),
-    erlang:send_after(30000, self(), print_stats),
+    erlang:send_after(10000, self(), print_stats),
     {noreply, State};
 
 
