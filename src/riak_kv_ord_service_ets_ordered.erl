@@ -90,8 +90,8 @@ handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = 
     Added1=insert_batch_labels(BatchedLabels,Partition,Added),
     Heartbeats1= dict:store(Partition,MaxTS,Heartbeats),
     %todo: test functionality of only send heartbeats when no label has sent fix @ vnode
-    Deleted1=deliver_possible_labels(Heartbeats1,Deleted),
-
+    {Deleted1,Batch_To_Deliver}=deliver_possible_labels(Heartbeats1,Deleted),
+    riak_kv_ord_service_receiver:deliver_to_receiver(Batch_To_Deliver),
     State1=State#state{heartbeats = Heartbeats1,added = Added1,deleted = Deleted1},
     %lager:info("after delivery"),
     %lager:info("Label ~p and heartbeat is ~p",[orddict:fetch(Label_Timestamp,Labels1),dict:fetch(Partition,Heartbeats1)]),
@@ -130,7 +130,7 @@ get_clients(N, Dict) -> if
 
 deliver_possible_labels(Heartbeats,Deleted)->
     Min_Stable_Timestamp=get_stable_timestamp(Heartbeats),
-    deliver_labels(Min_Stable_Timestamp,Deleted).
+    deliver_labels(Min_Stable_Timestamp,Deleted,[]).
 
 %get_max_delay(Labels,Current_Max_Delay)->
 
@@ -149,7 +149,7 @@ insert_batch_labels([],_Partition,Added)->Added;
 
 insert_batch_labels([Head|Rest],Partition,Added)->
     Label_Timestamp=Head#label.timestamp,
-    ets:insert(?Label_Table_Name,{{Label_Timestamp,Partition},Head}),
+    ets:insert(?Label_Table_Name,{{Label_Timestamp,Partition,Head},dt}),
     insert_batch_labels(Rest,Partition,Added+1).
 
 get_stable_timestamp(Heartbeats)->
@@ -163,9 +163,10 @@ get_stable_timestamp(Heartbeats)->
             true -> Min
         end end,Clock,Rest).
 
-deliver_labels(Min_Stable_Timestamp,Deleted)->
+deliver_labels(Min_Stable_Timestamp,Deleted,Batch_To_Deliver)->
     case ets:first(?Label_Table_Name)  of
-        '$end_of_table' -> Deleted;
-        {Timestamp,Partition} when Timestamp=<Min_Stable_Timestamp ->ets:delete(?Label_Table_Name,{Timestamp,Partition}),deliver_labels(Min_Stable_Timestamp,Deleted+1);
-        {_Timestamp,_Partition}->Deleted
+        '$end_of_table' -> {Deleted,Batch_To_Deliver};
+        {Timestamp,_Partition,Label}=Key when Timestamp=<Min_Stable_Timestamp ->ets:delete(?Label_Table_Name,Key), deliver_labels(Min_Stable_Timestamp,Deleted+1,[Label|Batch_To_Deliver]);
+        {_Timestamp,_Partition,_Label}->{Deleted,Batch_To_Deliver}
     end.
+
