@@ -91,7 +91,10 @@ handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = 
     Heartbeats1= dict:store(Partition,MaxTS,Heartbeats),
     %todo: test functionality of only send heartbeats when no label has sent fix @ vnode
     {Deleted1,Batch_To_Deliver}=deliver_possible_labels(Heartbeats1,Deleted),
-    riak_kv_ord_service_receiver:deliver_to_receiver(Batch_To_Deliver),
+    case Batch_To_Deliver of
+        [] ->noop;
+        _  -> riak_kv_ord_service_receiver:deliver_to_receiver(Batch_To_Deliver)
+    end,    
     State1=State#state{heartbeats = Heartbeats1,added = Added1,deleted = Deleted1},
     %lager:info("after delivery"),
     %lager:info("Label ~p and heartbeat is ~p",[orddict:fetch(Label_Timestamp,Labels1),dict:fetch(Partition,Heartbeats1)]),
