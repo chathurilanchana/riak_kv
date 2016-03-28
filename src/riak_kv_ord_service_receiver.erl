@@ -34,7 +34,7 @@
 %%%===================================================================
 
 deliver_to_receiver(Batch_To_Deliver)->
-    gen_server:cast({global,riak_kv_ord_service_receiver},{add_remote_labels,Batch_To_Deliver}).
+    gen_server:call({global,riak_kv_ord_service_receiver},{add_remote_labels,Batch_To_Deliver}).
 
 
 start_link() ->
@@ -46,8 +46,9 @@ init([ServerName]) ->
     {ok, #state{count = 0}}.
 
 
-handle_call(_Request, _From, State) ->
-    {reply, ok, State}.
+%dummy server just receives messages and ignore them
+handle_call({add_remote_labels,_Batch_To_Deliver},_From,State=#state{count = Count})->
+    {noreply,State#state{count = Count+1}};
 
 
 %dummy server just receives messages and ignore them
