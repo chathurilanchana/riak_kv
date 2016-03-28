@@ -48,13 +48,7 @@ init([ServerName]) ->
 
 %dummy server just receives messages and ignore them
 handle_call({add_remote_labels,_Batch_To_Deliver},_From,State=#state{count = Count})->
-    {noreply,State#state{count = Count+1}};
-
-
-%dummy server just receives messages and ignore them
-handle_cast({add_remote_labels,_Batch_To_Deliver},State=#state{count = Count})->
-    {noreply,State#state{count = Count+1}};
-
+    {noreply,State#state{count = Count+1}}.
 
 handle_cast(_Request, State) ->
     lager:error("received an unexpected  message ~n"),
