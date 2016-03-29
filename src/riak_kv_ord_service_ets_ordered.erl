@@ -132,7 +132,7 @@ handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = 
                 true -> %lager:info("I'm the primary"),
                     {Deleted1,New_Stable_TS,Batched_Deliverable_Labels}=deliver_possible_labels(Heartbeats1,Deleted),
                     case Batched_Deliverable_Labels of
-                        []->lager:info("nothing to deliver ~n"),noop;
+                        []->noop;
                         _ -> riak_kv_ord_service_receiver:deliver_to_receiver(Batched_Deliverable_Labels)
                     end,
                     Deleted_By_Me1=Deleted_By_Me+(Deleted1-Deleted),
