@@ -33,7 +33,7 @@
 
 -export([start_ordering_service/0,stop_ord_work/0,start_optimised_sequencer/0,start_old_sequencer/0,
     start_ordering_service_ets/0,start_ordering_service_gbtree/0,start_ordering_service_ets_ordered/0,
-    start_ord_service_failure_detector/0]).
+    start_ord_service_failure_detector/0,start_receiver/0]).
 
 -define (IF (Bool, A, B), if Bool -> A; true -> B end).
 
@@ -154,6 +154,11 @@ start_ordering_service_ets_ordered()->
         {riak_kv_ord_service_ets_ordered, start_link, []},
         temporary, 5000, worker, [riak_kv_ord_service_ets_ordered]}).
 
+start_receiver()->
+    lager:info("supervisor starting the receiver for dummy label receiving"),
+    supervisor:start_child(?MODULE,{riak_kv_ord_service_receiver,
+        {riak_kv_ord_service_receiver, start_link, []},
+        permanent, 5000, worker, [riak_kv_ord_service_receiver]}).
 
 start_ord_service_failure_detector()->
     lager:info("Starting the failure detector ~n"),
