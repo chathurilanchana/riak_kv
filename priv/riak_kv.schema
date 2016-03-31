@@ -654,3 +654,8 @@ end
     {datatype, integer},
       {default, "5"}
     ]}.
+
+{mapping, "receiver_batch_size", "riak_kv.receiver_batch_size", [
+    {datatype, integer},
+      {default, "5000"}
+    ]}.
