@@ -31,7 +31,7 @@
 
 -define(SERVER, ?MODULE).
 
--record(state, {heartbeats,reg_name,added,deleted,batch_to_deliver}).
+-record(state, {heartbeats,reg_name,added,deleted,batch_to_deliver,ignore,is_first_label}).
 
 test()->
     Status=net_kernel:connect_node('riak@127.0.0.1'), %this is the node where we run global server
@@ -73,9 +73,9 @@ init([ServerName]) ->
     lager:info("batch delivery size is ~p ~n",[Batch_Delivery_Size]),
     Dict1=get_clients(ClientCount,dict:new()),
     lager:info("dictionary size is ~p ~n",[dict:size(Dict1)]),
-    erlang:send_after(10000, self(), print_stats),
+    erlang:send_after(60000, self(), print_stats),
     ets:new(?Label_Table_Name, [ordered_set, named_table,private]),
-    {ok, #state{heartbeats = Dict1, reg_name = ServerName,added = 0,deleted = 0,batch_to_deliver = Batch_Delivery_Size}}.
+    {ok, #state{heartbeats = Dict1, reg_name = ServerName,added = 0,deleted = 0,batch_to_deliver = Batch_Delivery_Size,ignore=true,is_first_label = true}}.
 
 handle_call({trigger},_From, State=#state{added = Added,deleted = Deleted}) ->
     lager:info("added count is ~p deleted count is ~p ~n",[Added,Deleted]),
@@ -85,32 +85,47 @@ handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
 
-handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = Heartbeats,added = Added,deleted = Deleted,batch_to_deliver = Batch_Delivery_Size})->
+handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = Heartbeats,added = Added,deleted = Deleted,batch_to_deliver = Batch_Delivery_Size,ignore=Should_Ignore,is_first_label = Is_First})->
     % lager:info("received label from ~p ~n",[Partition]),
-    Added1=insert_batch_labels(BatchedLabels,Partition,Added),
-    Heartbeats1= dict:store(Partition,MaxTS,Heartbeats),
-    %todo: test functionality of only send heartbeats when no label has sent fix @ vnode
-    {Deleted1,Batch_To_Deliver}=deliver_possible_labels(Heartbeats1,Deleted,Batch_Delivery_Size),
-    case Batch_To_Deliver of
-        [] ->noop;
-        _  -> riak_kv_ord_service_receiver:deliver_to_receiver(Batch_To_Deliver)
-    end,
-    State1=State#state{heartbeats = Heartbeats1,added = Added1,deleted = Deleted1},
-    %lager:info("after delivery"),
-    %lager:info("Label ~p and heartbeat is ~p",[orddict:fetch(Label_Timestamp,Labels1),dict:fetch(Partition,Heartbeats1)]),
-    {noreply,State1};
+    State1=case Is_First of
+             true->erlang:send_after(10000, self(), disable_ignore),State#state{is_first_label = false};
+              _->State
+           end,
+
+    State2=case Should_Ignore of
+                true->State1;
+                   _-> Added1=insert_batch_labels(BatchedLabels,Partition,Added),
+                       Heartbeats1= dict:store(Partition,MaxTS,Heartbeats),
+                       %todo: test functionality of only send heartbeats when no label has sent fix @ vnode
+                       {Deleted1,Batch_To_Deliver}=deliver_possible_labels(Heartbeats1,Deleted,Batch_Delivery_Size),
+                       Diff_Delete=Deleted1-Deleted,
+                       case Diff_Delete>10000 of
+                           true->lager:info("*****heavy delete of ~p noticed ~n",[Diff_Delete]);
+                           _   ->noop
+                       end,
+                       case Batch_To_Deliver of
+                           [] ->noop;
+                           _  -> riak_kv_ord_service_receiver:deliver_to_receiver(Batch_To_Deliver)
+                       end,
+                       State#state{heartbeats = Heartbeats1,added = Added1,deleted = Deleted1}
+             end,
+
+    {noreply,State2};
 
 
 handle_cast(_Request, State) ->
     lager:error("received an unexpected  message ~n"),
     {noreply, State}.
 
+handle_info(disable_ignore, State) ->
+    {noreply, State#state{ignore = false}};%stabilised to receive labels
+
+
 handle_info(print_stats, State=#state{added = Added,deleted = Deleted}) ->
     {_,{Hour,Min,Sec}} = erlang:localtime(),
     lager:info("timestamp ~p: ~p: ~p: added ~p deleted ~p ~n",[Hour,Min,Sec,Added,Deleted]),
     erlang:send_after(10000, self(), print_stats),
     {noreply, State};
-
 
 handle_info(_Info, State) ->
     {noreply, State}.
