@@ -16,7 +16,6 @@
 %% API
 -export([start_link/0]).
 -include("riak_kv_causal_service.hrl").
--define(Label_Table_Name, labels).
 
 
 %% gen_server callbacks

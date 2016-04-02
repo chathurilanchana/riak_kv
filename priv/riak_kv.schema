@@ -659,3 +659,9 @@ end
     {datatype, integer},
       {default, "5000"}
     ]}.
+
+%%delete timer interval in ms
+{mapping, "label_delete_interval", "riak_kv.label_delete_interval", [
+    {datatype, integer},
+      {default, "1"}
+    ]}.

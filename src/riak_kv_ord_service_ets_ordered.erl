@@ -16,7 +16,6 @@
 %% API
 -export([start_link/0]).
 -include("riak_kv_causal_service.hrl").
--define(Label_Table_Name, labels).
 
 
 %% gen_server callbacks
@@ -31,7 +30,7 @@
 
 -define(SERVER, ?MODULE).
 
--record(state, {heartbeats,reg_name,added,deleted,batch_to_deliver,ignore,is_first_label}).
+-record(state, {reg_name,added,ignore,is_first_label}).
 
 test()->
     Status=net_kernel:connect_node('riak@127.0.0.1'), %this is the node where we run global server
@@ -71,21 +70,21 @@ init([ServerName]) ->
     lager:info("client_count is ~p ~n",[ClientCount]),
     Batch_Delivery_Size= app_helper:get_env(riak_kv,receiver_batch_size),
     lager:info("batch delivery size is ~p ~n",[Batch_Delivery_Size]),
-    Dict1=get_clients(ClientCount,dict:new()),
-    lager:info("dictionary size is ~p ~n",[dict:size(Dict1)]),
-    erlang:send_after(60000, self(), print_stats),
-    ets:new(?Label_Table_Name, [ordered_set, named_table,private]),
-    {ok, #state{heartbeats = Dict1, reg_name = ServerName,added = 0,deleted = 0,batch_to_deliver = Batch_Delivery_Size,ignore=true,is_first_label = true}}.
+    ets:new(?Label_Table_Name, [ordered_set, named_table,public,{read_concurrency, true}]),
+    ets:new(?HB_TABLE_NAME, [set, named_table,public,{read_concurrency, true},{write_concurrency, true}]),
+    initialize_hb_table(ClientCount),
+    erlang:send_after(10000, self(), print_stats),
+    {ok, #state{ reg_name = ServerName,added = 0,ignore=true,is_first_label = true}}.
 
-handle_call({trigger},_From, State=#state{added = Added,deleted = Deleted}) ->
-    lager:info("added count is ~p deleted count is ~p ~n",[Added,Deleted]),
+handle_call({trigger},_From, State=#state{added = Added}) ->
+    lager:info("added count is ~p ~n",[Added]),
     {reply,ok,State};
 
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
 
-handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = Heartbeats,added = Added,deleted = Deleted,batch_to_deliver = Batch_Delivery_Size,ignore=Should_Ignore,is_first_label = Is_First})->
+handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{added = Added,ignore=Should_Ignore,is_first_label = Is_First})->
     % lager:info("received label from ~p ~n",[Partition]),
     State1=case Is_First of
              true->erlang:send_after(10000, self(), disable_ignore),State#state{is_first_label = false};
@@ -95,21 +94,10 @@ handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = 
     State2=case Should_Ignore of
                 true->State1;
                    _-> Added1=insert_batch_labels(BatchedLabels,Partition,Added),
-                       Heartbeats1= dict:store(Partition,MaxTS,Heartbeats),
+                       update_hb_table(Partition,MaxTS),
                        %todo: test functionality of only send heartbeats when no label has sent fix @ vnode
-                       {Deleted1,Batch_To_Deliver}=deliver_possible_labels(Heartbeats1,Deleted,Batch_Delivery_Size),
-                       Diff_Delete=Deleted1-Deleted,
-                       case Diff_Delete>10000 of
-                           true->lager:info("*****heavy delete of ~p noticed ~n",[Diff_Delete]);
-                           _   ->noop
-                       end,
-                       case Batch_To_Deliver of
-                           [] ->noop;
-                           _  -> riak_kv_ord_service_receiver:deliver_to_receiver(Batch_To_Deliver)
-                       end,
-                       State#state{heartbeats = Heartbeats1,added = Added1,deleted = Deleted1}
+                       State#state{added = Added1}
              end,
-
     {noreply,State2};
 
 
@@ -121,9 +109,9 @@ handle_info(disable_ignore, State) ->
     {noreply, State#state{ignore = false}};%stabilised to receive labels
 
 
-handle_info(print_stats, State=#state{added = Added,deleted = Deleted}) ->
+handle_info(print_stats, State=#state{added = Added}) ->
     {_,{Hour,Min,Sec}} = erlang:localtime(),
-    lager:info("timestamp ~p: ~p: ~p: added ~p deleted ~p ~n",[Hour,Min,Sec,Added,Deleted]),
+    lager:info("timestamp ~p: ~p: ~p: added ~p ~n",[Hour,Min,Sec,Added]),
     erlang:send_after(10000, self(), print_stats),
     {noreply, State};
 
@@ -140,15 +128,15 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
+initialize_hb_table(ClientId)->
+    if
+        ClientId>0  -> ets:insert(?HB_TABLE_NAME,{ClientId,0}),initialize_hb_table(ClientId-1) ;
+        true -> noop
+    end.
 
-get_clients(N, Dict) -> if
-                            N>0 ->Dict1=dict:store(N, 0, Dict) ,get_clients(N-1,Dict1);
-                            true ->Dict
-                        end.
-
-deliver_possible_labels(Heartbeats,Deleted,Batch_Delivery_Size)->
-    Min_Stable_Timestamp=get_stable_timestamp(Heartbeats),
-    deliver_labels(Min_Stable_Timestamp,Deleted,[],Batch_Delivery_Size).
+update_hb_table(Partition,MaxTS)->
+    % todo: check why  ets:update_element(?HB_TABLE_NAME, Partition,{Partition,MaxTS}) not working
+    ets:insert(?HB_TABLE_NAME,{Partition,MaxTS}).
 
 insert_batch_labels([],_Partition,Added)->Added;
 
@@ -157,26 +145,3 @@ insert_batch_labels([Head|Rest],Partition,Added)->
     ets:insert(?Label_Table_Name,{{Label_Timestamp,Partition,Head},dt}),
     insert_batch_labels(Rest,Partition,Added+1).
 
-get_stable_timestamp(Heartbeats)->
-    HB_List=dict:to_list(Heartbeats),
-    [First|Rest]=HB_List,
-    {_Partition,Clock}=First,
-    lists:foldl(fun({_Key,Val},Min)->
-        %lager:info("key is ~p value is ~p ~n",[Key,Val]),
-        if
-            Val<Min-> Val;
-            true -> Min
-        end end,Clock,Rest).
-
-deliver_labels(Min_Stable_Timestamp,Deleted,Batch_To_Deliver,Batch_Delivery_Size)->
-    Batch_To_Deliver1=case length(Batch_To_Deliver)>Batch_Delivery_Size of
-                          true->riak_kv_ord_service_receiver:deliver_to_receiver(Batch_To_Deliver),[];
-                          _   ->Batch_To_Deliver
-                      end,
-    case ets:first(?Label_Table_Name)  of
-        '$end_of_table' -> {Deleted,Batch_To_Deliver1};
-        {Timestamp,_Partition,Label}=Key when Timestamp=<Min_Stable_Timestamp ->
-            ets:delete(?Label_Table_Name,Key),
-            deliver_labels(Min_Stable_Timestamp,Deleted+1,[Label|Batch_To_Deliver1],Batch_Delivery_Size);
-        {_Timestamp,_Partition,_Label}->{Deleted,Batch_To_Deliver1}
-    end.

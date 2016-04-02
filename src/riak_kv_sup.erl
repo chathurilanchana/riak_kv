@@ -32,7 +32,7 @@
 -export([init/1]).
 
 -export([start_ordering_service/0,stop_ordering_service/1,start_optimised_sequencer/0,start_old_sequencer/0,start_ordering_service_ets/0,
-    start_ordering_service_gbtree/0,start_ordering_service_ets_ordered/0,start_receiver/0]).
+    start_ordering_service_gbtree/0,start_ordering_service_ets_ordered/0,start_receiver/0,start_delete_process/0]).
 
 -define (IF (Bool, A, B), if Bool -> A; true -> B end).
 
@@ -152,6 +152,12 @@ start_ordering_service_ets_ordered()->
     supervisor:start_child(?MODULE,{riak_kv_ord_service_ets_ordered,
         {riak_kv_ord_service_ets_ordered, start_link, []},
         permanent, 5000, worker, [riak_kv_ord_service_ets_ordered]}).
+
+start_delete_process()->
+    lager:info("supervisor starting the label delete process ~n"),
+    supervisor:start_child(?MODULE,{riak_kv_ord_service_delete_process,
+        {riak_kv_ord_service_delete_process, start_link, []},
+        permanent, 5000, worker, [riak_kv_ord_service_delete_process]}).
 
 start_receiver()->
     lager:info("supervisor starting the receiver for dummy label receiving"),

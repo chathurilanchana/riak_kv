@@ -13,3 +13,5 @@
     timestamp,
     node_id
 }).
+-define(Label_Table_Name, labels).
+-define(HB_TABLE_NAME, heartbeats).
