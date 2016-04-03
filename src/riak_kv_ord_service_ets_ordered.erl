@@ -31,7 +31,7 @@
 
 -define(SERVER, ?MODULE).
 
--record(state, {heartbeats,reg_name,added,deleted,batch_to_deliver,is_primary,deleted_by_me,current_min_stable,primary_name}).
+-record(state, {heartbeats,added,deleted,reg_name,batch_to_deliver,is_primary,deleted_by_me,current_min_stable,ignore,is_first_label}).
 
 check_ready() ->
     MyId=app_helper:get_env(riak_kv, myid),
@@ -80,14 +80,10 @@ start_link() ->
     lager:info("my id is ~p ~n",[Ord_Service_Name]),
     gen_server:start_link({global,Ord_Service_Name}, ?MODULE, [Ord_Service_Name], []).
 
-init([ServerName]) ->
+init([Reg_Name]) ->
     lager:info("ordering service started"),
-    %{X,Y} =erlang:process_info(global:whereis_name(ServerName), memory),
-    %lager:info("ordering service started ~p ~p ~n",[X,Y]),
-    %process_flag(min_heap_size, 100000),
-    %memsup:set_procmem_high_watermark(0.6),
-    %{P,Q} =erlang:process_info(global:whereis_name(ServerName), memory),
-    %lager:info("after memory is ~p ~p ~n",[P,Q]),
+    process_flag(min_heap_size, 100000),
+    memsup:set_procmem_high_watermark(0.6),
     Batch_Delivery_Size= app_helper:get_env(riak_kv,receiver_batch_size),
     ClientCount=app_helper:get_env(riak_kv, clients),
     lager:info("client_count is ~p ~n",[ClientCount]),
@@ -95,7 +91,7 @@ init([ServerName]) ->
     lager:info("dictionary size is ~p ~n",[dict:size(Dict1)]),
     erlang:send_after(10000, self(), print_stats),
     ets:new(?Label_Table_Name, [ordered_set, named_table,private]),
-    {ok, #state{heartbeats = Dict1, reg_name = ServerName,batch_to_deliver = Batch_Delivery_Size,added = 0,deleted = 0,is_primary = false,deleted_by_me = 0,current_min_stable = 0}}.
+    {ok, #state{heartbeats = Dict1,reg_name = Reg_Name,batch_to_deliver = Batch_Delivery_Size,added = 0,deleted = 0,is_primary = false,deleted_by_me = 0,current_min_stable = 0,ignore = true,is_first_label = true}}.
 
 
 
@@ -123,8 +119,13 @@ handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
 
-handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = Heartbeats,added = Added,deleted = Deleted,is_primary = IsPrimary,reg_name = MyName,deleted_by_me =Deleted_By_Me,current_min_stable = Current_Stable,batch_to_deliver = Batch_Delivery_Size})->
-    % lager:info("received label from ~p ~n",[Partition]),
+handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = Heartbeats,added = Added,deleted = Deleted,is_primary = IsPrimary,reg_name = MyName,deleted_by_me =Deleted_By_Me,current_min_stable = Current_Stable,batch_to_deliver = Batch_Delivery_Size,is_first_label = IsFirst})->
+    %ignore first 10 sec to tolerate time diffs
+    State1=case IsFirst of
+               true->erlang:send_after(10000, self(), disable_ignore),State#state{is_first_label = false};
+               _->State
+           end,
+
     case MaxTS>Current_Stable of
         true->Added1=insert_batch_labels(BatchedLabels,Partition,Added),
             Heartbeats1= dict:store(Partition,MaxTS,Heartbeats),
@@ -136,7 +137,9 @@ handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = 
                         []->noop;
                         _ -> riak_kv_ord_service_receiver:deliver_to_receiver(Batched_Deliverable_Labels)
                     end,
-                    Deleted_By_Me1=Deleted_By_Me+(Deleted1-Deleted),
+                    Diff=Deleted1-Deleted,
+                    trigger_delete_high_alarm(Diff),
+                    Deleted_By_Me1=Deleted_By_Me+Diff,
                     case New_Stable_TS>Current_Stable of
                         true->riak_kv_ord_service_failure_detector:send_stable_ts_to_replicas(New_Stable_TS,MyName);
                         _   ->noop
@@ -145,12 +148,12 @@ handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = 
 
             end,
 
-            State1=State#state{heartbeats = Heartbeats1,added = Added1,deleted = Deleted1,deleted_by_me = Deleted_By_Me1,current_min_stable = New_Stable_TS};
+            State2=State1#state{heartbeats = Heartbeats1,added = Added1,deleted = Deleted1,deleted_by_me = Deleted_By_Me1,current_min_stable = New_Stable_TS};
 
-            _   ->State1=State %the labels are already delivered,ignore them
+            _   ->State2=State1 %the labels are already delivered,ignore them
     end,
 
-    {noreply,State1};
+    {noreply,State2};
 
 %todo: fix running 2 primaries by sending a NACK
 handle_cast({stable_ts,Stable_TS,_Primary_Name}, State=#state{deleted = Deleted}) ->
@@ -167,6 +170,8 @@ handle_info(print_stats, State=#state{added = Added,deleted = Deleted,deleted_by
     erlang:send_after(10000, self(), print_stats),
     {noreply, State};
 
+handle_info(disable_ignore, State) ->
+    {noreply, State#state{ignore = false}};%stabilised to receive labels
 
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -229,3 +234,8 @@ deliver_labels(Min_Stable_Timestamp,Deleted,Batched_Deliverable_Labels,Batch_Siz
         {_Timestamp,_Partition,_Head}->{Deleted,Min_Stable_Timestamp,Batch_To_Deliver1}
 
     end.
+
+trigger_delete_high_alarm(Diff)->case Diff>10000 of
+                                     true->lager:info("****heavy delete of ~p noticed ~n***",[Diff]);
+                                     false->noop
+                                 end.
