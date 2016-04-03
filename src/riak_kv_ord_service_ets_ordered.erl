@@ -120,39 +120,43 @@ handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
 
-handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = Heartbeats,added = Added,deleted = Deleted,is_primary = IsPrimary,reg_name = MyName,deleted_by_me =Deleted_By_Me,current_min_stable = Current_Stable,batch_to_deliver = Batch_Delivery_Size,is_first_label = IsFirst,receiver_name = Receiver_Name})->
+handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = Heartbeats,added = Added,deleted = Deleted,is_primary = IsPrimary,reg_name = MyName,deleted_by_me =Deleted_By_Me,current_min_stable = Current_Stable,batch_to_deliver = Batch_Delivery_Size,is_first_label = IsFirst,ignore = Should_Ignore,receiver_name = Receiver_Name})->
     %ignore first 10 sec to tolerate time diffs
     State1=case IsFirst of
                true->erlang:send_after(10000, self(), disable_ignore),State#state{is_first_label = false};
                _->State
            end,
 
-    case MaxTS>Current_Stable of
-        true->Added1=insert_batch_labels(BatchedLabels,Partition,Added),
-            Heartbeats1= dict:store(Partition,MaxTS,Heartbeats),
+    State2=case Should_Ignore of
+               true->State1;
+               _   ->
+                   case MaxTS>Current_Stable of
+                        true->Added1=insert_batch_labels(BatchedLabels,Partition,Added),
+                         Heartbeats1= dict:store(Partition,MaxTS,Heartbeats),
             %todo: test functionality of only send heartbeats when no label has sent fix @ vnode
-            case (IsPrimary) of
-                true -> %lager:info("I'm the primary"),
-                    {Deleted1,New_Stable_TS,Batched_Deliverable_Labels}=deliver_possible_labels(Heartbeats1,Deleted,Batch_Delivery_Size,Receiver_Name),
-                    case Batched_Deliverable_Labels of
-                        []->noop;
-                        _ -> riak_kv_ord_service_receiver:deliver_to_receiver(Batched_Deliverable_Labels,Receiver_Name)
-                    end,
-                    Diff=Deleted1-Deleted,
-                    trigger_delete_high_alarm(Diff),
-                    Deleted_By_Me1=Deleted_By_Me+Diff,
-                    case New_Stable_TS>Current_Stable of
-                        true->riak_kv_ord_service_failure_detector:send_stable_ts_to_replicas(New_Stable_TS,MyName);
-                        _   ->noop
-                    end;
-                _ -> Deleted1=Deleted,Deleted_By_Me1=Deleted_By_Me,New_Stable_TS=Current_Stable
+                            case (IsPrimary) of
+                                    true -> %lager:info("I'm the primary"),
+                                        {Deleted1,New_Stable_TS,Batched_Deliverable_Labels}=deliver_possible_labels(Heartbeats1,Deleted,Batch_Delivery_Size,Receiver_Name),
+                                        case Batched_Deliverable_Labels of
+                                                 []->noop;
+                                                 _ -> riak_kv_ord_service_receiver:deliver_to_receiver(Batched_Deliverable_Labels,Receiver_Name)
+                                        end,
+                                        Diff=Deleted1-Deleted,
+                                        trigger_delete_high_alarm(Diff),
+                                        Deleted_By_Me1=Deleted_By_Me+Diff,
+                                        case New_Stable_TS>Current_Stable of
+                                                true->riak_kv_ord_service_failure_detector:send_stable_ts_to_replicas(New_Stable_TS,MyName);
+                                                 _   ->noop
+                                        end;
+                            _ -> Deleted1=Deleted,Deleted_By_Me1=Deleted_By_Me,New_Stable_TS=Current_Stable
 
-            end,
+                            end,
 
-            State2=State1#state{heartbeats = Heartbeats1,added = Added1,deleted = Deleted1,deleted_by_me = Deleted_By_Me1,current_min_stable = New_Stable_TS};
+                            State1#state{heartbeats = Heartbeats1,added = Added1,deleted = Deleted1,deleted_by_me = Deleted_By_Me1,current_min_stable = New_Stable_TS};
 
-            _   ->State2=State1 %the labels are already delivered,ignore them
-    end,
+                          _ ->State1 %the labels are already delivered,ignore them
+                   end
+              end,
 
     {noreply,State2};
 
