@@ -31,7 +31,7 @@
 
 -define(SERVER, ?MODULE).
 
--record(state, {heartbeats,added,deleted,reg_name,batch_to_deliver,is_primary,deleted_by_me,current_min_stable,ignore,is_first_label}).
+-record(state, {heartbeats,added,deleted,reg_name,batch_to_deliver,is_primary,deleted_by_me,current_min_stable,ignore,is_first_label,receiver_name}).
 
 check_ready() ->
     MyId=app_helper:get_env(riak_kv, myid),
@@ -77,10 +77,11 @@ print_status()->
 start_link() ->
     MyId=app_helper:get_env(riak_kv, myid),
     Ord_Service_Name=string:concat(?SERVICE_PREFIX,integer_to_list(MyId)),
+    Receiver_Name=string:concat(?RECEIVER_PREFIX,integer_to_list(MyId)),
     lager:info("my id is ~p ~n",[Ord_Service_Name]),
-    gen_server:start_link({global,Ord_Service_Name}, ?MODULE, [Ord_Service_Name], []).
+    gen_server:start_link({global,Ord_Service_Name}, ?MODULE, [Ord_Service_Name,Receiver_Name], []).
 
-init([Reg_Name]) ->
+init([Reg_Name,Receiver_Name]) ->
     lager:info("ordering service started"),
     process_flag(min_heap_size, 100000),
     memsup:set_procmem_high_watermark(0.6),
@@ -91,7 +92,7 @@ init([Reg_Name]) ->
     lager:info("dictionary size is ~p ~n",[dict:size(Dict1)]),
     erlang:send_after(10000, self(), print_stats),
     ets:new(?Label_Table_Name, [ordered_set, named_table,private]),
-    {ok, #state{heartbeats = Dict1,reg_name = Reg_Name,batch_to_deliver = Batch_Delivery_Size,added = 0,deleted = 0,is_primary = false,deleted_by_me = 0,current_min_stable = 0,ignore = true,is_first_label = true}}.
+    {ok, #state{heartbeats = Dict1,reg_name = Reg_Name,batch_to_deliver = Batch_Delivery_Size,added = 0,deleted = 0,is_primary = false,deleted_by_me = 0,current_min_stable = 0,ignore = true,is_first_label = true,receiver_name = Receiver_Name}}.
 
 
 
@@ -119,7 +120,7 @@ handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
 
-handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = Heartbeats,added = Added,deleted = Deleted,is_primary = IsPrimary,reg_name = MyName,deleted_by_me =Deleted_By_Me,current_min_stable = Current_Stable,batch_to_deliver = Batch_Delivery_Size,is_first_label = IsFirst})->
+handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = Heartbeats,added = Added,deleted = Deleted,is_primary = IsPrimary,reg_name = MyName,deleted_by_me =Deleted_By_Me,current_min_stable = Current_Stable,batch_to_deliver = Batch_Delivery_Size,is_first_label = IsFirst,receiver_name = Receiver_Name})->
     %ignore first 10 sec to tolerate time diffs
     State1=case IsFirst of
                true->erlang:send_after(10000, self(), disable_ignore),State#state{is_first_label = false};
@@ -132,10 +133,10 @@ handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = 
             %todo: test functionality of only send heartbeats when no label has sent fix @ vnode
             case (IsPrimary) of
                 true -> %lager:info("I'm the primary"),
-                    {Deleted1,New_Stable_TS,Batched_Deliverable_Labels}=deliver_possible_labels(Heartbeats1,Deleted,Batch_Delivery_Size),
+                    {Deleted1,New_Stable_TS,Batched_Deliverable_Labels}=deliver_possible_labels(Heartbeats1,Deleted,Batch_Delivery_Size,Receiver_Name),
                     case Batched_Deliverable_Labels of
                         []->noop;
-                        _ -> riak_kv_ord_service_receiver:deliver_to_receiver(Batched_Deliverable_Labels)
+                        _ -> riak_kv_ord_service_receiver:deliver_to_receiver(Batched_Deliverable_Labels,Receiver_Name)
                     end,
                     Diff=Deleted1-Deleted,
                     trigger_delete_high_alarm(Diff),
@@ -192,9 +193,9 @@ get_clients(N, Dict) -> if
                             true ->Dict
                         end.
 
-deliver_possible_labels(Heartbeats,Deleted,Batch_Delivery_Size)->
+deliver_possible_labels(Heartbeats,Deleted,Batch_Delivery_Size,Receiver_Name)->
     Min_Stable_Timestamp=get_stable_timestamp(Heartbeats),
-    deliver_labels(Min_Stable_Timestamp,Deleted,[],Batch_Delivery_Size).
+    deliver_labels(Min_Stable_Timestamp,Deleted,[],Batch_Delivery_Size,Receiver_Name).
 
 insert_batch_labels([],_Partition,Added)->Added;
 
@@ -223,14 +224,14 @@ deliver_labels(Min_Stable_Timestamp,Deleted)->
 
     end.
 
-deliver_labels(Min_Stable_Timestamp,Deleted,Batched_Deliverable_Labels,Batch_Size)->
+deliver_labels(Min_Stable_Timestamp,Deleted,Batched_Deliverable_Labels,Batch_Size,Receiver_Name)->
     Batch_To_Deliver1=case length(Batched_Deliverable_Labels)>Batch_Size of
-                          true->riak_kv_ord_service_receiver:deliver_to_receiver(Batched_Deliverable_Labels),[];
+                          true->riak_kv_ord_service_receiver:deliver_to_receiver(Batched_Deliverable_Labels,Receiver_Name),[];
                           _   ->Batched_Deliverable_Labels
                       end,
     case ets:first(?Label_Table_Name)  of
         '$end_of_table' -> {Deleted,Min_Stable_Timestamp,Batch_To_Deliver1};
-        {Timestamp,_Partition,Head}=Key when Timestamp=<Min_Stable_Timestamp ->ets:delete(?Label_Table_Name,Key),deliver_labels(Min_Stable_Timestamp,Deleted+1,[Head|Batch_To_Deliver1],Batch_Size);
+        {Timestamp,_Partition,Head}=Key when Timestamp=<Min_Stable_Timestamp ->ets:delete(?Label_Table_Name,Key),deliver_labels(Min_Stable_Timestamp,Deleted+1,[Head|Batch_To_Deliver1],Batch_Size,Receiver_Name);
         {_Timestamp,_Partition,_Head}->{Deleted,Min_Stable_Timestamp,Batch_To_Deliver1}
 
     end.

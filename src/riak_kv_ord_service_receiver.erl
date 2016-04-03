@@ -9,7 +9,9 @@
 -module(riak_kv_ord_service_receiver).
 -author("chathuri").
 
+
 -behaviour(gen_server).
+-include("riak_kv_causal_service.hrl").
 
 %% API
 -export([start_link/0]).
@@ -22,7 +24,7 @@
     terminate/2,
     code_change/3]).
 
--export([deliver_to_receiver/1]).
+-export([deliver_to_receiver/2]).
 
 -define(SERVER, ?MODULE).
 
@@ -33,21 +35,26 @@
 %%% API Methods
 %%%===================================================================
 
-deliver_to_receiver(Batch_To_Deliver)->
-    gen_server:call({global,riak_kv_ord_service_receiver},{add_remote_labels,Batch_To_Deliver}).
+deliver_to_receiver(Batch_To_Deliver,Receiver_Name)->
+    gen_server:call({global,Receiver_Name},{add_remote_labels,Batch_To_Deliver}).
 
 
 start_link() ->
-    gen_server:start_link({global,riak_kv_ord_service_receiver}, ?MODULE, [riak_kv_ord_service_receiver], []).
+    MyId=app_helper:get_env(riak_kv, myid),
+    Receiver_Name=string:concat(?RECEIVER_PREFIX,integer_to_list(MyId)),
+    gen_server:start_link({global,Receiver_Name}, ?MODULE, [Receiver_Name], []).
 
 init([ServerName]) ->
     lager:info("receiver ~p started ~n",[ServerName]),
-    erlang:send_after(10000, self(), print_stats),
     {ok, #state{count = 0}}.
 
 
 %dummy server just receives messages and ignore them
 handle_call({add_remote_labels,_Batch_To_Deliver},_From,State=#state{count = Count})->
+    case Count of
+        0-> erlang:send_after(10000, self(), print_stats);
+        _->noop
+    end,
     {reply,ok,State#state{count = Count+1}};
     
 handle_call(_Request, _From, State) ->

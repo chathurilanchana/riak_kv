@@ -15,3 +15,4 @@
 }).
 
 -define(SERVICE_PREFIX, "riak_kv_ord_service_").
+-define(RECEIVER_PREFIX, "riak_kv_ord_service_receiver").
