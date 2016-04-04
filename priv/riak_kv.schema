@@ -656,7 +656,7 @@ end
 ]}.
 
 
-{mapping, "ord_service_replicas", "riak_kv.ord_service_replicas", [
+{mapping, "next_id", "riak_kv.next_id", [
     {datatype, integer},
     {default,2}
 ]}.
@@ -666,12 +666,3 @@ end
     {default,1}
 ]}.
 
-{mapping, "ord_service_fd_hb_interval", "riak_kv.ord_service_fd_hb_interval", [
-    {datatype, integer},
-    {default,100}
-]}.
-
-{mapping, "clients", "riak_kv.clients", [
-    {datatype, integer},
-      {default, "5"}
-    ]}.

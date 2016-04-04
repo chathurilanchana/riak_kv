@@ -14,4 +14,6 @@
     node_id
 }).
 
--define(SERVICE_PREFIX, "riak_kv_ord_service_").
+-define(ORD_SERVICE_PREFIX, "riak_kv_ord_service_").
+-define(RECEIVER_PREFIX, "riak_kv_ord_service_receiver").
+-define(SEQUENCER_PREFIX, "riak_kv_sequencer_").

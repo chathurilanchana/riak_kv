@@ -45,7 +45,7 @@
 -export([get_client_id/1]).
 -export([for_dialyzer_only_ignore/3]).
 -export([ensemble/1]).
--export([forward_to_sequencer/3,forward_to_old_sequencer/1,forward_to_ordering_service/5,test/0]).
+-export([forward_to_sequencer/4,forward_to_old_sequencer/1,forward_to_ordering_service/5,test/0]).
 
 -compile({no_auto_import,[put/2]}).
 %% @type default_timeout() = 60000
@@ -85,10 +85,11 @@ test()->
     wait_for_reply(10,1000),
     riak_kv_optimised_sequencer:test().
 
-forward_to_sequencer(RObj, W, {?MODULE, [Node, ClientId]})->
+%forward to the head of the chain and wait for a reply from the tail
+forward_to_sequencer(RObj, W,Primary_Sequencer_Name, {?MODULE, [_Node, _ClientId]})->
     Me = self(),
     ReqId = mk_reqid(),
-    riak_kv_optimised_sequencer:forward_put_to_sequencer(RObj, [{w, W}, {dw, W}], [Node, ClientId],ReqId,Me),
+    riak_kv_optimised_sequencer:forward_put_to_sequencer(RObj, [{w, W}, {dw, W}],Primary_Sequencer_Name,ReqId,Me),
     wait_for_reply(ReqId, 10000). %may be we need to set to ?DEFAULT_TIMEOUT
 
 forward_to_old_sequencer( {?MODULE, [_Node, _ClientId]})->

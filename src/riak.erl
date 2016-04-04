@@ -28,6 +28,7 @@
          local_client/0,local_client/1,
          join/1]).
 -export([code_hash/0]).
+-include("riak_kv_causal_service.hrl").
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -104,25 +105,22 @@ client_connect(Node, ClientId= <<_:32>>) ->
             %% or the new vnode based vclocks should be used.
             %% N.B. all nodes must be upgraded to 1.0 before
             %% this can be enabled.
-            Ordering_Service_Nodes=getOrderingServiceNodes(Node),
+            %not handling the failures but just forwarding the request over the chain
+            Primary_Name= string:concat(?SEQUENCER_PREFIX,integer_to_list(1)),
 
             case vnode_vclocks(Node) of
                 {badrpc, _Reason} ->
                     {error, {could_not_reach_node, Node}};
                 true ->
-                    {ok,Ordering_Service_Nodes, riak_client:new(Node, undefined)};
+                    {ok,Primary_Name, riak_client:new(Node, undefined)};
                 _ ->
-                    {ok,Ordering_Service_Nodes, riak_client:new(Node, ClientId)}
+                    {ok,Primary_Name, riak_client:new(Node, ClientId)}
             end
     end;
 client_connect(Node, undefined) ->
     client_connect(Node, riak_core_util:mkclientid(Node));
 client_connect(Node, Other) ->
     client_connect(Node, <<(erlang:phash2(Other)):32>>).
-
-getOrderingServiceNodes(Node)->
-    rpc:call(Node, app_helper, get_env,
-        [riak_kv, ord_service_replicas]).
 
 
 vnode_vclocks(Node) ->

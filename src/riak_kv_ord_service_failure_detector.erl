@@ -48,7 +48,7 @@ init([]) ->
     Total_Replicas=app_helper:get_env(riak_kv, ord_service_replicas),
     Retry_Count=app_helper:get_env(riak_kv, retry_count),
     MyId=app_helper:get_env(riak_kv, myid),
-    Ord_Service_Name=string:concat(?SERVICE_PREFIX,integer_to_list(MyId)),
+    Ord_Service_Name=string:concat(?ORD_SERVICE_PREFIX,integer_to_list(MyId)),
     Heartbeat_Interval=app_helper:get_env(riak_kv, ord_service_fd_hb_interval),
     Other_Replica_List=generate_list(Total_Replicas,[],MyId),
     Other_Replica_Count=Total_Replicas-1,
@@ -111,7 +111,7 @@ generate_list(0,List,_MyId)->List;
 generate_list(Ordering_Service_Node,List,MyId)->
     if
         MyId=:=Ordering_Service_Node -> generate_list(Ordering_Service_Node-1,List,MyId);
-        true ->  Service_Name= string:concat(?SERVICE_PREFIX,integer_to_list(Ordering_Service_Node)),
+        true ->  Service_Name= string:concat(?ORD_SERVICE_PREFIX,integer_to_list(Ordering_Service_Node)),
                  NewList=[Service_Name|List],
                  generate_list(Ordering_Service_Node-1,NewList,MyId)
     end.
