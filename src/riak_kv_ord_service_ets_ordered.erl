@@ -87,10 +87,12 @@ handle_call(_Request, _From, State) ->
 
 handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = Heartbeats,added = Added,deleted = Deleted,batch_to_deliver = Batch_Delivery_Size})->
     % lager:info("received label from ~p ~n",[Partition]),
-    Added1=insert_batch_labels(BatchedLabels,Partition,Added),
+    {Added1,Batch_To_Insert}=batched_labels_to_insert(BatchedLabels,Partition,Added,[]),
+    insert_batch_to_ets_table(Batch_To_Insert),
     Heartbeats1= dict:store(Partition,MaxTS,Heartbeats),
     %todo: test functionality of only send heartbeats when no label has sent fix @ vnode
     {Deleted1,Batch_To_Deliver}=deliver_possible_labels(Heartbeats1,Deleted,Batch_Delivery_Size),
+    %Deleted1=deliver_possible_labels(Heartbeats1,Deleted),
     case Batch_To_Deliver of
         [] ->noop;
         _  -> riak_kv_ord_service_receiver:deliver_to_receiver(Batch_To_Deliver)
@@ -134,25 +136,37 @@ get_clients(N, Dict) -> if
 deliver_possible_labels(Heartbeats,Deleted,Batch_Delivery_Size)->
     Min_Stable_Timestamp=get_stable_timestamp(Heartbeats),
     deliver_labels(Min_Stable_Timestamp,Deleted,[],Batch_Delivery_Size).
+    % deliver_labels(Min_Stable_Timestamp,Deleted).
 
-insert_batch_labels([],_Partition,Added)->Added;
+batched_labels_to_insert([],_Partition,Added,Batch_To_Insert)->
+    {Added,Batch_To_Insert};
 
-insert_batch_labels([Head|Rest],Partition,Added)->
+
+batched_labels_to_insert([Head|Rest],Partition,Added,Batch_To_Insert)->
     Label_Timestamp=Head#label.timestamp,
-    ets:insert(?Label_Table_Name,{{Label_Timestamp,Partition,Head},dt}),
-    insert_batch_labels(Rest,Partition,Added+1).
+    %batched_labels_to_insert(Rest,Partition,Added+1,[{{Label_Timestamp,Partition},Head}|Batch_To_Insert]).
+    batched_labels_to_insert(Rest,Partition,Added+1,[{{Label_Timestamp,Partition,Head},dt}|Batch_To_Insert]).
+
+insert_batch_to_ets_table(Batch_To_Insert)->
+    ets:insert(?Label_Table_Name,Batch_To_Insert).
 
 get_stable_timestamp(Heartbeats)->
-    HB_List=dict:to_list(Heartbeats),
-    [First|Rest]=HB_List,
-    {_Partition,Clock}=First,
     lists:foldl(fun({_Key,Val},Min)->
         %lager:info("key is ~p value is ~p ~n",[Key,Val]),
         if
             Val<Min-> Val;
             true -> Min
-        end end,Clock,Rest).
+        end end,infinity,dict:to_list(Heartbeats)).
 
+ %deliver_labels(Min_Stable_Timestamp,Deleted)->
+   % MS=ets:fun2ms(fun({{X,_T},Y}) when (X =< Min_Stable_Timestamp)-> Y end),
+    %Batch_To_Deliver=ets:select(?Label_Table_Name,MS),
+    %riak_kv_ord_service_receiver:deliver_to_receiver(Batch_To_Deliver),
+    %New_Deletes=  ets:select_delete(?Label_Table_Name,MS),
+    % lager:info("new deletes are ~p ~n",[New_Deletes]),
+   % Deleted+New_Deletes.
+
+%we can't do a batch delete because of the schedular problem, have to delete 1 by 1
 deliver_labels(Min_Stable_Timestamp,Deleted,Batch_To_Deliver,Batch_Delivery_Size)->
     Batch_To_Deliver1=case length(Batch_To_Deliver)>Batch_Delivery_Size of
                           true->riak_kv_ord_service_receiver:deliver_to_receiver(Batch_To_Deliver),[];
