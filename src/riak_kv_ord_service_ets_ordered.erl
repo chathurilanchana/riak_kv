@@ -131,8 +131,9 @@ handle_cast({add_label,BatchedLabels,Partition,MaxTS},State=#state{heartbeats = 
                true->State1;
                _   ->
                    case MaxTS>Current_Stable of
-                        true->Added1=insert_batch_labels(BatchedLabels,Partition,Added),
-                         Heartbeats1= dict:store(Partition,MaxTS,Heartbeats),
+                       true-> {Added1,Batch_To_Insert}=batched_labels_to_insert(BatchedLabels,Partition,Added,[]),
+                           insert_batch_to_ets_table(Batch_To_Insert),
+                           Heartbeats1= dict:store(Partition,MaxTS,Heartbeats),
             %todo: test functionality of only send heartbeats when no label has sent fix @ vnode
                             case (IsPrimary) of
                                     true -> %lager:info("I'm the primary"),
@@ -201,12 +202,17 @@ deliver_possible_labels(Heartbeats,Deleted,Batch_Delivery_Size,Receiver_Name)->
     Min_Stable_Timestamp=get_stable_timestamp(Heartbeats),
     deliver_labels(Min_Stable_Timestamp,Deleted,[],Batch_Delivery_Size,Receiver_Name).
 
-insert_batch_labels([],_Partition,Added)->Added;
+batched_labels_to_insert([],_Partition,Added,Batch_To_Insert)->
+    {Added,Batch_To_Insert};
 
-insert_batch_labels([Head|Rest],Partition,Added)->
+
+batched_labels_to_insert([Head|Rest],Partition,Added,Batch_To_Insert)->
     Label_Timestamp=Head#label.timestamp,
-    ets:insert(?Label_Table_Name,{{Label_Timestamp,Partition,Head},rc}),
-    insert_batch_labels(Rest,Partition,Added+1).
+    %batched_labels_to_insert(Rest,Partition,Added+1,[{{Label_Timestamp,Partition},Head}|Batch_To_Insert]).
+    batched_labels_to_insert(Rest,Partition,Added+1,[{{Label_Timestamp,Partition,Head},dt}|Batch_To_Insert]).
+
+insert_batch_to_ets_table(Batch_To_Insert)->
+    ets:insert(?Label_Table_Name,Batch_To_Insert).
 
 get_stable_timestamp(Heartbeats)->
     HB_List=dict:to_list(Heartbeats),
