@@ -276,7 +276,6 @@ do_possible_delivers_to_vnodes([Head|Rest],My_VClock,Sender_Dc_Id,HasChanged)->
 
     case IsDeliverable of
         true->Max_VClock=riak_kv_vclock:get_max_vector(My_VClock,Head#label.vector),
-              lager:info("Max Vector ~p ",[Max_VClock]),
                %update the clock of the label, so vnodes does not need to do the same again
               Head1=Head#label{vector = Max_VClock},
               DocIdx = riak_core_util:chash_key(Head#label.bkey),
