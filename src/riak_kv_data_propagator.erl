@@ -47,7 +47,6 @@ handle_call(_Request, _From, State) ->
 
 %rely on similar ft logic as we implemented
 handle_cast({remote_data,BKey,Object,Options,Sender_Dc_Id,Timestamp}, State) ->
-  lager:info("remote data received at propagator from dc ~p ~n",[Sender_Dc_Id]),
   DocIdx = riak_core_util:chash_key(BKey),
   PrefList = riak_core_apl:get_primary_apl(DocIdx, 1,riak_kv),
   [{IndexNode, _Type}] = PrefList,

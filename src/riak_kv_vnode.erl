@@ -638,7 +638,7 @@ handle_command({vnode_remote_delay_stats},_From,State=#state{max_visibility_dela
                      true->Sum_Delay/Count;
                         _ ->0
                   end,
-        lager:info("===============avg delay is ~p max delay is ~p==",[Avg,Max_Delay]),
+        lager:info("===============avg delay is ~p max delay is ~p total remote writes ~p ==",[Avg,Max_Delay,Count]),
         {noreply,State};
 
 %when receives a label, check whether data is available, if so apply it and update the vector, otherwise wait for data
