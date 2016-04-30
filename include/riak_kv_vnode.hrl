@@ -1,5 +1,12 @@
 -include_lib("riak_core/include/riak_core_vnode.hrl").
 
+-record(riak_kv_remote_put_req, {
+  bkey :: {binary(),binary()},
+  object :: term(),
+  sender_dc_id::integer(),
+  timestamp::non_neg_integer(),
+  options :: list()}).
+
 -record(riak_kv_put_req_v1, {
           bkey :: {binary(),binary()},
           object :: term(),
@@ -68,6 +75,7 @@
           bkeys = [] :: [{binary(), binary()}]
          }).
 
+-define(KV_REMOTE_PUT_REQ,#riak_kv_remote_put_req).
 -define(KV_PUT_REQ, #riak_kv_put_req_v1).
 -define(KV_W1C_PUT_REQ, #riak_kv_w1c_put_req_v1).
 -define(KV_W1C_PUT_REPLY, #riak_kv_w1c_put_reply_v1).

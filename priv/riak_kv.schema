@@ -673,9 +673,30 @@ end
 
 {mapping, "ordering_service_hb_freq", "riak_kv.ordering_service_hb_freq", [
     {datatype, integer},
-    {default, "3000"}
+    {default, 1000}
 ]}.
+
+{mapping, "total_dcs", "riak_kv.ordering_service_hb_freq", [
+    {datatype, integer},
+    {default, 3}
+]}.
+
+{mapping, "ordering_service_total_dcs", "riak_kv.ordering_service_total_dcs", [
+    {datatype, integer},
+    {default, 3}
+]}.
+
+{mapping, "ordering_service_my_dc_id", "riak_kv.ordering_service_my_dc_id", [
+    {datatype, integer},
+    {default, 1}
+]}.
+
 {mapping, "stat_name", "riak_kv.stat_name", [
   {datatype, directory},
   {default, "/home/chathuri"}
+]}.
+
+{mapping, "myip", "riak_kv.myip", [
+  {datatype, string},
+   {default,"dev1@127.0.0.1,dev2@127.0.0.1"}
 ]}.

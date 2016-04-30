@@ -25,12 +25,13 @@
 -module(riak_kv_sup).
 
 -include_lib("riak_kv_js_pools.hrl").
+-include("riak_kv_causal_service.hrl").
 
 -behaviour(supervisor).
 
 -export([start_link/0]).
 -export([init/1]).
--export([start_ordering_service/0,stop_ordering_service/1]).
+-export([start_ordering_service/0,stop_ordering_service/1,start_receiver/0]).
 
 -define (IF (Bool, A, B), if Bool -> A; true -> B end).
 
@@ -43,19 +44,19 @@ start_link() ->
 %% @spec start_ordering_service() -> ServerRet
 %% @doc API for starting the ordering service for causal ordering of events in the dc
 start_ordering_service()->
-    Ordering_Service_Type=app_helper:get_env(riak_kv, gen_server_type),
-
-    case Ordering_Service_Type of
-        all_to_one->lager:info("causal all to one started"),
+            lager:info("starting the ordering service ~n"),
             supervisor:start_child(?MODULE,{riak_kv_ordering_service,
             {riak_kv_ordering_service, start_link, []},
-            permanent, 5000, worker, [riak_kv_ordering_service]});
-        _->lager:info("This type of causal service is not defined ~p")
-    end.
+            permanent, 5000, worker, [riak_kv_ordering_service]}).
 
 stop_ordering_service(Pid)->
     supervisor:terminate_child(?MODULE,Pid).
 
+start_receiver()->
+  lager:info("starting the label receiber"),
+  supervisor:start_child(?MODULE,{riak_kv_receiver_perdc,
+    {riak_kv_receiver_perdc, start_link, []},
+    permanent, 5000, worker, [riak_kv_receiver_perdc]}).
 
 
 %% @spec init([]) -> SupervisorTree
@@ -119,6 +120,11 @@ init([]) ->
                     {riak_kv_ensembles, start_link, []},
                     permanent, 30000, worker, [riak_kv_ensembles]},
 
+
+    Data_Propagator = {riak_kv_data_propagator,
+    {riak_kv_data_propagator, start_link, []},
+    permanent, 5000, worker, [riak_kv_data_propagator]},
+
     % Figure out which processes we should run...
     HasStorageBackend = (app_helper:get_env(riak_kv, storage_backend) /= undefined),
 
@@ -139,7 +145,8 @@ init([]) ->
         MapJSPool,
         ReduceJSPool,
         HookJSPool,
-        HTTPCache
+        HTTPCache,
+        Data_Propagator
     ]),
 
     % Run the proesses...

@@ -8,8 +8,10 @@
 %%%-------------------------------------------------------------------
 -author("chathuri").
 -record(label,{
-    req_id,
     bkey,
     timestamp,
-    node_id
+    vector
 }).
+-define(STABILIZER_PREFIX, "riak_kv_ord_service_").
+-define(RECEIVER_PER_DC_PREFIX, "riak_kv_ord_service_receiver_per_dc").
+-define(RECEIVER_PER_NODE,riak_kv_receiver_per_node).

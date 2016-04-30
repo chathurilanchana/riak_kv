@@ -78,7 +78,7 @@
 
 -export([handoff_data_encoding_method/0]).
 -export([set_vnode_forwarding/2]).
--export([heartbeat/1]).
+-export([heartbeat/1,set_receivers/2,propagate/6,deliver_stable_label/4,print_vnode_remote_delay_statistics/0]).
 
 -include_lib("riak_kv_vnode.hrl").
 -include_lib("riak_kv_index.hrl").
@@ -133,11 +133,23 @@
           leasing = false :: boolean()
          }).
 
+-record(remote_received_data,{
+    object,
+    options,
+    received_time
+}).
+
 -record(state, {idx :: partition(),
                 max_ts::non_neg_integer(),
                 causal_service_reg_name::atom(),
-                causal_service_type::all_to_one | plum_tree | deterministic,
                 ordering_service_hb_freq::non_neg_integer(),
+                receivers,
+                dc_vector,
+                max_visibility_delay::non_neg_integer(),
+                sum_visibility_delay::non_neg_integer(),
+                sum_delayed_remote_writes::non_neg_integer(),
+                label_data_storage,
+                my_dc_id::non_neg_integer(),
                 mod :: module(),
                 async_put :: boolean(),
                 modstate :: term(),
@@ -209,7 +221,21 @@ heartbeat(PrefList)->
     riak_core_vnode_master:command(PrefList, {heartbeat}, {fsm, undefined, self()}, riak_kv_vnode_master).
 
 
+set_receivers(Node, Receivers)->
+    riak_core_vnode_master:sync_command(Node, {set_receivers, Receivers},riak_kv_vnode_master).
 
+propagate(IndexNode, BKey, Object,Options,My_Dc_Id,Timestamp)->
+  riak_core_vnode_master:sync_command(IndexNode, ?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,sender_dc_id = My_Dc_Id,timestamp = Timestamp},riak_kv_vnode_master).
+
+deliver_stable_label(Label,Sender_Dc_Id,Node,Sender)->
+  riak_core_vnode_master:command(Node, {stable_label,Label,Sender_Dc_Id,Sender}, {fsm, undefined, self()}, riak_kv_vnode_master).
+
+print_vnode_remote_delay_statistics()->
+  {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+  GrossPrefLists = riak_core_ring:all_preflists(Ring, 1),
+  lists:foreach(fun(PrefList) ->
+    riak_core_vnode_master:command(PrefList, {vnode_remote_delay_stats}, {fsm, undefined, self()}, riak_kv_vnode_master)
+                end, GrossPrefLists).
 
 -spec maybe_create_hashtrees(state()) -> state().
 maybe_create_hashtrees(State) ->
@@ -498,15 +524,23 @@ init([Index]) ->
             end,
 
             %ordering service specific params
-            Causal_Service_Name=app_helper:get_env(riak_kv,gen_server_register_name),
-            Causal_Service_type=app_helper:get_env(riak_kv, gen_server_type),
+            My_DC_Id=app_helper:get_env(riak_kv,ordering_service_my_dc_id),
+            Causal_Service_Name=string:concat(?STABILIZER_PREFIX,integer_to_list(My_DC_Id)),
             Ordering_Service_Hb_Freq=app_helper:get_env(riak_kv, ordering_service_hb_freq),
+
+            Total_DC_Count=app_helper:get_env(riak_kv,ordering_service_total_dcs),
+            DC_Vector=getInitVector(My_DC_Id,Total_DC_Count,dict:new()),
 
             State = #state{idx=Index,
                            max_ts =0,
                            causal_service_reg_name = Causal_Service_Name,
-                           causal_service_type = Causal_Service_type,
                            ordering_service_hb_freq = Ordering_Service_Hb_Freq,
+                           my_dc_id = My_DC_Id,
+                           dc_vector =DC_Vector,
+                            max_visibility_delay = 0,
+                            sum_visibility_delay = 0,
+                            sum_delayed_remote_writes=0,
+                           label_data_storage = dict:new(),
                            async_folding=AsyncFolding,
                            mod=Mod,
                            async_put = DoAsyncPut,
@@ -543,6 +577,15 @@ init([Index]) ->
             {error, Reason1}
     end.
 
+%initiate element for each remote dc
+getInitVector(My_Id,Total_DC_Count,Dict)->
+  case Total_DC_Count of
+    0->Dict;
+    My_Id-> getInitVector(My_Id,Total_DC_Count-1,Dict);
+    _-> Dict1=dict:store(Total_DC_Count,0,Dict),
+        getInitVector(My_Id,Total_DC_Count-1,Dict1)
+  end.
+
 
 handle_overload_command(?KV_PUT_REQ{}, Sender, Idx) ->
     riak_core_vnode:reply(Sender, {fail, Idx, overload});
@@ -570,7 +613,9 @@ handle_overload_info({raw_forward_get, _, From}, _Idx) ->
 handle_overload_info(_, _) ->
     ok.
 
-%when replication is added, local_put of coord should send an identifier,coz only it should calculate the MaxTS and send it
+handle_command({set_receivers, Receivers}, _From, S0) ->
+  lager:info("VNODE RECEIVED RECEIVERS ~p ~n",[Receivers]),
+  {reply, ok, S0#state{receivers=Receivers}};
 
 handle_command({heartbeat},_From,State=#state{max_ts = MaxTS, idx = Partition,
     causal_service_reg_name =Causal_Service_Id,ordering_service_hb_freq = Hb_Frequency })->
@@ -588,24 +633,97 @@ handle_command({heartbeat},_From,State=#state{max_ts = MaxTS, idx = Partition,
 
     {noreply,State#state{max_ts = Clock}};
 
+handle_command({vnode_remote_delay_stats},_From,State=#state{max_visibility_delay = Max_Delay,sum_delayed_remote_writes = Count,sum_visibility_delay = Sum_Delay})->
+        Avg     =     case Count>0 of
+                     true->Sum_Delay/Count;
+                        _ ->0
+                  end,
+        lager:info("===============avg delay is ~p max delay is ~p==",[Avg,Max_Delay]),
+        {noreply,State};
+
+%when receives a label, check whether data is available, if so apply it and update the vector, otherwise wait for data
+handle_command({stable_label,Label,Sender_Dc_Id,Sender},_From,State=#state{label_data_storage = Label_Data_storage,idx = Idx,sum_visibility_delay =Sum_Delay,max_visibility_delay = Max_Delay })->
+  %lager:info("A deliverable label is received from ~p label is ~p",[Sender_Dc_Id,Label]),
+  {_Bucket,Key}=Label#label.bkey,
+  <<Integer_Key:32/big>>=Key,
+  Label_Data_Key={Sender_Dc_Id,Integer_Key,Label#label.timestamp},
+  {Label_Data_storage1,State1}= case dict:find(Label_Data_Key,Label_Data_storage) of
+                                    {ok,Data}-> StartTime = riak_core_util:moment(),
+                                        Object=Data#remote_received_data.object,
+                                        Options=Data#remote_received_data.options,
+                                        Data_Receive_Time=Data#remote_received_data.received_time,
+                                        {_Reply, UpdState} = do_remote_put(Label#label.bkey,  Object, StartTime, Options, State),
+                                        %lager:info("Remote update from ~p applied at vnode",[Sender_Dc_Id]),
+                                        Sender!ok,
+
+                                        %just to masure the visibility delay, comment after testing
+                                        Delay=riak_kv_util:get_timestamp()-Data_Receive_Time,
+                                        Sum_Delay1=case Delay>0 of
+                                                   true->Delay+Sum_Delay;
+                                                   _   ->Sum_Delay
+                                                 end,
+                                        Max_Delay1=case Delay>Max_Delay of
+                                                     true->Delay;
+                                                   _   ->Max_Delay
+                                                 end,
+
+                                         update_vnode_stats(vnode_put, Idx, os:timestamp()),%data has been received
+                                        {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector = Label#label.vector,sum_visibility_delay = Sum_Delay1,max_visibility_delay = Max_Delay1}};
+
+                                      _  ->%lager:info("cant apply label at vnode, data not received"),
+                                           {dict:store(Label_Data_Key,{Sender,Label#label.vector},Label_Data_storage),State}
+                                end,
+
+  {noreply,State1#state{label_data_storage =Label_Data_storage1 }};
+
+handle_command(?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,sender_dc_id = Sender_DcId,timestamp = Timestamp}, _Sender, State=#state{idx=Idx,label_data_storage = Label_Data_storage,sum_delayed_remote_writes = Delayed_Remote_writes})->
+  %lager:info("vnode received remote data"),
+  {_Bucket,Key}=BKey,
+  <<Integer_Key:32/big>>=Key,
+  Label_Data_Key={Sender_DcId,Integer_Key,Timestamp},
+  {Label_Data_storage1,State1}= case dict:find(Label_Data_Key,Label_Data_storage) of
+                                   {ok,{Sender,Vector}}-> StartTime = riak_core_util:moment(),
+                                       {_Reply, UpdState} = do_remote_put(BKey,  Object, StartTime, Options, State),
+                                       %lager:info("Remote update from ~p applied at vnode",[Sender_DcId]),
+                                       update_vnode_stats(vnode_put, Idx, os:timestamp()),
+                                       Sender!ok,
+                                       {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector =Vector}};
+
+                                   _  -> %lager:info("cant apply data at vnode, waiting for label"),
+                                        Received_Object=#remote_received_data{object = Object,options = Options,received_time = riak_kv_util:get_timestamp()},
+                                        {dict:store(Label_Data_Key,Received_Object,Label_Data_storage),State#state{sum_delayed_remote_writes = Delayed_Remote_writes+1}}
+                                 end,
+  {reply,ok,State1#state{label_data_storage = Label_Data_storage1}}; %Change UpdState to State if not work
+
 handle_command(?KV_PUT_REQ{bkey=BKey,
                            object=Object,
                            clock = Clock,
                            req_id=ReqId,
                            start_time=StartTime,
                            options=Options},
-               Sender, State=#state{idx=Idx,max_ts = MaxTS,causal_service_reg_name = Causal_Service_Id}) ->
+               Sender, State=#state{idx=Idx,max_ts = MaxTS,causal_service_reg_name = Causal_Service_Id,receivers = Receivers,my_dc_id = My_Dc_Id,dc_vector = DC_Vector}) ->
     StartTS = os:timestamp(),
     PhysicalTS=riak_kv_util:get_timestamp(),  %if not working change to current_monotonic_time()
     MaxTS0=max(Clock+1,max(PhysicalTS,MaxTS+1)), %retrieve the hybrid clock
-
-    Label=riak_kv_causal_service_util:create_label(ReqId,BKey,MaxTS0,{Idx,node()}),
-    riak_kv_ordering_service:add_label(Label,Causal_Service_Id,Idx),
-    %decide whether we add the label now or at the fsm
-
     riak_core_vnode:reply(Sender, {w, Idx, ReqId,MaxTS0}), %reply with hybrid clock at server
     StateNew=State#state{max_ts = MaxTS0},
     {_Reply, UpdState} = do_put(Sender, BKey,  Object, ReqId, StartTime, Options, StateNew),
+
+    %propagate labels to the ordering service
+     Label=riak_kv_causal_service_util:create_label(BKey,MaxTS0,DC_Vector),
+     riak_kv_ordering_service:add_label(Label,Causal_Service_Id,Idx),
+
+    %should keep incrementing my own clock, if clients allowed to move
+
+    %propagate data to one per each receiver other than me
+    lists:foreach(fun(Key) ->
+        List= dict:fetch(Key, Receivers),
+        {ListPos, _} = random:uniform_s(length(List), os:timestamp()),
+        RemoteReceiverName=lists:nth(ListPos, List),
+        %lager:info("list member for dcid ~p is ~p ~n",[Key,RemoteReceiverName]),
+        riak_kv_data_propagator:propagate_data(BKey,Object,Options,My_Dc_Id,MaxTS0,RemoteReceiverName)
+                end, dict:fetch_keys(Receivers)),
+
     update_vnode_stats(vnode_put, Idx, StartTS),
     {noreply, UpdState};
 
@@ -1413,6 +1531,9 @@ raw_put({Idx, Node}, Key, Obj) ->
     Proxy ! {raw_put, Key, Obj},
     ok.
 
+%add seperate method for remote put
+
+
 %% @private
 %% upon receipt of a client-initiated put
 do_put(Sender, {Bucket,_Key}=BKey, RObj, ReqID, StartTime, Options, State) ->
@@ -1442,10 +1563,42 @@ do_put(Sender, {Bucket,_Key}=BKey, RObj, ReqID, StartTime, Options, State) ->
                        crdt_op = CRDTOp},
     {PrepPutRes, UpdPutArgs, State2} = prepare_put(State, PutArgs),
     {Reply, UpdState} = perform_put(PrepPutRes, State2, UpdPutArgs),
-    riak_core_vnode:reply(Sender, Reply),
+     riak_core_vnode:reply(Sender, Reply),
 
     update_index_write_stats(UpdPutArgs#putargs.is_index, UpdPutArgs#putargs.index_specs),
     {Reply, UpdState}.
+
+%called when remote put is received from the local dc receiver
+
+do_remote_put( {Bucket,_Key}=BKey, RObj, StartTime, Options, State) ->
+  BProps =  case proplists:get_value(bucket_props, Options) of
+              undefined ->
+                riak_core_bucket:get_bucket(Bucket);
+              Props ->
+                Props
+            end,
+  PruneTime = case proplists:get_value(rr, Options, false) of
+                true ->
+                  undefined;
+                false ->
+                  StartTime
+              end,
+  Coord = proplists:get_value(coord, Options, false),
+  CRDTOp = proplists:get_value(counter_op, Options, proplists:get_value(crdt_op, Options, undefined)),
+  PutArgs = #putargs{returnbody=proplists:get_value(returnbody,Options,false) orelse Coord,
+    coord=Coord,
+    lww=proplists:get_value(last_write_wins, BProps, false),
+    bkey=BKey,
+    robj=RObj,
+    bprops=BProps,
+    starttime=StartTime,
+    prunetime=PruneTime,
+    crdt_op = CRDTOp},
+  {PrepPutRes, UpdPutArgs, State2} = prepare_put(State, PutArgs),
+  {Reply, UpdState} = perform_put(PrepPutRes, State2, UpdPutArgs),
+  update_index_write_stats(UpdPutArgs#putargs.is_index, UpdPutArgs#putargs.index_specs),
+  {Reply, UpdState}.
+
 
 do_backend_delete(BKey, RObj, State = #state{idx = Idx,
                                              mod = Mod,
@@ -1670,6 +1823,7 @@ actual_put(BKey={Bucket, Key}, Obj, IndexSpecs, RB, ReqID,
                     Reply = {dw, Idx, ReqID}
             end;
         {{error, Reason, UpdModState}, _EncodedVal} ->
+            lager:info("*****PUT OPERATION FAILED*****  "),
             Reply = {fail, Idx, Reason}
     end,
     {Reply, State#state{modstate=UpdModState}}.

@@ -194,7 +194,6 @@ get(Bucket, Key,MaxTS, R, Timeout, {?MODULE, [_Node, _ClientId]}=THIS) when
 %%      nodes have received the request.
 %% @equiv put(RObj, [])
 put(RObj,MaxTS, {?MODULE, [_Node, _ClientId]}=THIS) ->
-    lager:info("put called"),
     put(RObj,MaxTS, [], THIS).
 
 

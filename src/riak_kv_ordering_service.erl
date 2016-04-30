@@ -12,7 +12,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/0,add_label/3,partition_heartbeat/3]).
+-export([start_link/0,partition_heartbeat/3,add_label/3]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -24,25 +24,35 @@
     print_status/0
 ]).
 
--export([ordered_dict_test/0]).   %to test ordered dict label delivery
 
 -include("riak_kv_causal_service.hrl").
 -define(SERVER, ?MODULE).
+-define(Label_Table_Name, labels).
 
 %delay- average delay between receiving and delivering a label
--record(state, {heartbeats,labels,reg_name,added,deleted,sum_delay,highest_delay,stat_file_name}).
+-record(state, {heartbeats,reg_name,added,deleted,remote_dc_list,my_dc_id,my_logical_clock,
+    my_vector,unsatisfied_remote_labels}).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
 
 start_link() ->
-    ServerName=app_helper:get_env(riak_kv,gen_server_register_name),
+    My_DC_Id=app_helper:get_env(riak_kv,ordering_service_my_dc_id),
+    ServerName=string:concat(?STABILIZER_PREFIX,integer_to_list(My_DC_Id)),
     gen_server:start_link({global, ServerName}, ?MODULE, [ServerName], []).
 
 add_label(Label,Causal_Service_Id,Partition)->
     %lager:info("label is ready to add to the ordeing service  ~p",[Label]),
     gen_server:cast({global,Causal_Service_Id},{add_label,Label,Partition}).
+
+deliver_to_remote_dcs(_ReversedBatch_To_Deliver,_My_Dc_Id,[])->
+    noop;
+
+%send all deliverable labels to remote dc stabilizers
+deliver_to_remote_dcs(ReversedBatch_To_Deliver,My_Dc_Id,[Head|Rest])->
+    gen_server:cast({global,Head},{remote_labels,ReversedBatch_To_Deliver,My_Dc_Id}),
+    deliver_to_remote_dcs(ReversedBatch_To_Deliver,My_Dc_Id,Rest).
 
 partition_heartbeat(Partition,Clock,Causal_Service_Id)->
     gen_server:cast({global,Causal_Service_Id},{partition_heartbeat,Clock,Partition}).
@@ -58,11 +68,13 @@ print_status()->
 
 %server name to be sent to other processes, check whether to read from proplist
 init([ServerName]) ->
-    lager:info("ordering service started"),
+    Cluster_Ips=app_helper:get_env(riak_kv,myip),
+    List_Ips= string:tokens(Cluster_Ips, ","),
+    connect_kernal(List_Ips), %need to connect manually, otherwise gen_server msgs not receive outside cluster
+
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     Num_Partitions=riak_core_ring:num_partitions(Ring),
     lager:info("total partitions are ~p and server name is ~p",[Num_Partitions,ServerName]),
-    File_Name=app_helper:get_env(riak_kv, stat_name),  % later use to get delay
 
     GrossPrefLists = riak_core_ring:all_preflists(Ring, 1),
     Dict1 = lists:foldl(fun(PrefList, Dict) ->
@@ -71,55 +83,104 @@ init([ServerName]) ->
         dict:store(Partition, 0, Dict)
                        end, dict:new(), GrossPrefLists),
     lager:info("dictionary size is ~p ~n",[dict:size(Dict1)]),
-    %erlang:send_after(10000, self(), print_stats),
-    {ok, #state{heartbeats = Dict1,labels = orddict:new(), reg_name = ServerName,added = 0,deleted = 0,sum_delay = 0,highest_delay = 0,stat_file_name = File_Name}}.
+
+    My_DC_Id=app_helper:get_env(riak_kv,ordering_service_my_dc_id),
+    ServerName=string:concat(?STABILIZER_PREFIX,integer_to_list(My_DC_Id)),
+
+    Remote_Dc_Count=app_helper:get_env(riak_kv,ordering_service_total_dcs),
+    Remote_Dc_List=get_remote_dc_list(Remote_Dc_Count,My_DC_Id,?STABILIZER_PREFIX,[]),
+    lager:info("reomte dc list is ~p ~n",[Remote_Dc_List]),
+    My_Vector=getInitVector(Remote_Dc_Count,dict:new()),%indicates the updates received from remote dcs
+    UnsatisfiedRemoteLabels= get_init_remote_Label_dictionary(dict:new(),Remote_Dc_Count,My_DC_Id),
+
+    riak_kv_receiver_perdc:assign_convergers(), %ordering service initiate the converger logic
+
+    ets:new(?Label_Table_Name, [ordered_set, named_table,private]),
+    erlang:send_after(10000, self(), print_stats),
+    {ok, #state{heartbeats = Dict1, reg_name = ServerName,remote_dc_list = Remote_Dc_List,added = 0,
+        deleted = 0,my_dc_id = My_DC_Id,my_vector = My_Vector,my_logical_clock = 0,unsatisfied_remote_labels =UnsatisfiedRemoteLabels}}.
 
 
-handle_call({trigger},_From, State=#state{added = Added,deleted = Deleted,sum_delay = Delay,highest_delay = Max_Delay}) ->
-    Delay_Per_Op=Delay div Deleted,
-    lager:info("added count is ~p deleted count is ~p delay-per-op is ~p max-delay is ~p ~n",[Added,Deleted,Delay_Per_Op,Max_Delay]),
+handle_call({trigger},_From, State=#state{added = Added,deleted = Deleted}) ->
+    lager:info("added count is ~p deleted count is ~p ~n",[Added,Deleted]),
     {reply,ok,State};
 
 handle_call(_Request, _From, State) ->
+     lager:info("Unexpected message received at hanlde_call"),
     {reply, ok, State}.
 
 
-handle_cast({add_label,Label,Partition},State=#state{labels = Labels,heartbeats = Heartbeats,added = Added,deleted = Deleted,sum_delay = Sum_Delay,highest_delay = Max_Delay})->
-    %lager:info("received label from ~p ~n",[Partition]),
-    Label_Timestamp=Label#label.timestamp,
-    Labels1=orddict:append(Label_Timestamp,Label,Labels),
-    Heartbeats1= dict:store(Partition,Label_Timestamp,Heartbeats),
-    Max_Delay1=get_max_delay(Labels,Max_Delay),
-    %todo: test functionality of only send heartbeats when no label has sent fix @ vnode
-    {Labels2,Deleted1,Sum_Delay1}=deliver_possible_labels(Labels1,Heartbeats1,Deleted,Sum_Delay),
+%no batching as in this case frequency is low
+handle_cast({add_label,Label,Partition},State=#state{heartbeats = Heartbeats,my_dc_id = My_Dc_Id,
+    remote_dc_list = Remote_Dc_List,added = Added,deleted = Deleted,my_logical_clock = My_Logical_Clock,my_vector = Vclock})->
 
-    State1=State#state{labels = Labels2,heartbeats = Heartbeats1,added = Added+1,deleted = Deleted1,sum_delay = Sum_Delay1,highest_delay = Max_Delay1},
+    insert_label(Label,Partition),
+    Added1=Added+1,
+    Heartbeats1= dict:store(Partition,Label#label.timestamp,Heartbeats),
+    {Deleted1,Batch_To_Deliver,My_Logical_Clock1}= get_possible_deliveries(Heartbeats1,Deleted,My_Logical_Clock,My_Dc_Id),
 
-    %lager:info("Label ~p and heartbeat is ~p",[orddict:fetch(Label_Timestamp,Labels1),dict:fetch(Partition,Heartbeats1)]),
+    Vclock1=dict:store(My_Dc_Id,My_Logical_Clock1,Vclock),
+
+    case Batch_To_Deliver of
+        [] ->noop;
+        _  ->ReversedBatch_To_Deliver=lists:reverse(Batch_To_Deliver), %as we append deleted to head, need to reverse to get in ascending order
+             deliver_to_remote_dcs(ReversedBatch_To_Deliver,My_Dc_Id,Remote_Dc_List)
+    end,
+    State1=State#state{heartbeats = Heartbeats,my_vector=Vclock1,added = Added1,deleted = Deleted1,my_logical_clock = My_Logical_Clock1},
     {noreply,State1};
 
-handle_cast({partition_heartbeat,Clock,Partition},State=#state{labels = Labels,heartbeats = Heartbeats,deleted = Deleted,sum_delay = Sum_Delay,highest_delay = Max_Delay})->
-    %lager:info("received heartbeat from partition ~p and clock of it is ~p",[Partition,Clock]),
+handle_cast({partition_heartbeat,Clock,Partition},State=#state{heartbeats = Heartbeats,my_dc_id = My_Dc_Id,remote_dc_list = Remote_Dc_List,deleted = Deleted
+    ,my_logical_clock = My_Logical_Clock,my_vector = Vclock})->
+
     Heartbeats1=dict:store(Partition,Clock,Heartbeats),
-    Max_Delay1=get_max_delay(Labels,Max_Delay),
-    {Labels1,Deleted1,Sum_Delay1}= deliver_possible_labels(Labels,Heartbeats1,Deleted,Sum_Delay),
-    %lager:info("remaining elements in dictionary is ~p ~n",[orddict:size(Labels1)]),
-    State1=State#state{labels = Labels1,heartbeats = Heartbeats1,deleted = Deleted1,sum_delay = Sum_Delay1,highest_delay = Max_Delay1},
+    {Deleted1,Batch_To_Deliver,My_Logical_Clock1}= get_possible_deliveries(Heartbeats1,Deleted,My_Logical_Clock,My_Dc_Id),
+    Vclock1=dict:store(My_Dc_Id,My_Logical_Clock1,Vclock) ,
+
+    case Batch_To_Deliver of
+        [] ->noop;
+        _  -> ReversedBatch_To_Deliver=lists:reverse(Batch_To_Deliver),
+             deliver_to_remote_dcs(ReversedBatch_To_Deliver,My_Dc_Id,Remote_Dc_List)
+    end,
+    State1=State#state{heartbeats = Heartbeats1,my_logical_clock = My_Logical_Clock1,my_vector =Vclock1,deleted = Deleted1},
     {noreply,State1};
+
+%#dcs>3, otherwise we dont need any blocking.
+handle_cast({remote_labels,Batch_To_Deliver,Sender_Dc_Id},State=#state{my_vector = My_VClock, unsatisfied_remote_labels = Remote_LabelDict})->
+     %lager:info("received remote labels ~p from ~p ~n",[Batch_To_Deliver,Sender_Dc_Id]),
+     [Head|_]=Batch_To_Deliver,  %the smallest one on the head
+     IsDeliverable=riak_kv_vclock:is_label_deliverable(My_VClock,Head#label.vector,Sender_Dc_Id),
+
+     %we only check this if head is deliverable from received batch
+{Remote_LabelDict2,My_Vclock2}=
+     case IsDeliverable of
+         true->%lager:info("YEYYYYYYYYY RECEIVED SOMETHING DELIVERABLE"),
+               {Remaining,My_Vclock1,_HasChanged}=do_possible_delivers_to_vnodes(Batch_To_Deliver,My_VClock,Sender_Dc_Id,false),
+               Remote_LabelDict1= case Remaining of
+                                           []->Remote_LabelDict;
+                                           Labels->Old_From_Receiver=dict:fetch(Sender_Dc_Id,Remote_LabelDict),
+                                                   Labels1=Old_From_Receiver ++ Labels,
+                                                   dict:store(Sender_Dc_Id,Labels1,Remote_LabelDict)
+                                       end,
+
+%after delivering received, we need to check whether we can delete any in the unsatisfied list
+%todo: this call may do several unnecessary checks. Improve (Proably keeping track of vector and decide removal by that)!!!!
+                process_unsatisfied_remote_labels(Remote_LabelDict1,My_Vclock1);
+
+%nothing to deliver, append received to the sender's list
+            _-> Old_From_Receiver=dict:fetch(Sender_Dc_Id,Remote_LabelDict),
+                Labels1=Old_From_Receiver ++ Batch_To_Deliver,
+                {dict:store(Sender_Dc_Id,Labels1,Remote_LabelDict),My_VClock}
+     end,
+    {noreply,State#state{my_vector = My_Vclock2,unsatisfied_remote_labels = Remote_LabelDict2}};
 
 handle_cast(_Request, State) ->
     lager:error("received an unexpected  message ~n"),
     {noreply, State}.
 
-handle_info(print_stats, State=#state{added = Added,deleted = Deleted,highest_delay = Max_Delay,stat_file_name = _FileName}) ->
+handle_info(print_stats, State=#state{added = Added,deleted = Deleted}) ->
     {_,{Hour,Min,Sec}} = erlang:localtime(),
-    case (State#state.deleted>0) of
-        true->
-              %add_line_to_file(Added,Deleted,Max_Delay,FileName);
-              lager:info("timestamp ~p: ~p: ~p: added ~p deleted ~p max-delay ~p ~n",[Hour,Min,Sec,Added,Deleted,Max_Delay]);
-        false->%add_line_to_file(Added,0,Max_Delay,FileName)
-            lager:info("timestamp ~p: ~p: ~p: added ~p deleted ~p max-delay ~p ~n",[Hour,Min,Sec,Added,0,Max_Delay])
-    end,
+    lager:info("timestamp ~p: ~p: ~p: added ~p deleted ~p ~n",[Hour,Min,Sec,Added,Deleted]),
+
     erlang:send_after(10000, self(), print_stats),
     {noreply, State};
 
@@ -136,36 +197,23 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-deliver_possible_labels(Labels,Heartbeats,Deleted,Sum_Delay)->
+get_remote_dc_list(Remote_Dc_Id,My_Dc_Id,ServerName_Prefix,Remote_DC_List)->
+            case Remote_Dc_Id of
+                       0-> Remote_DC_List;
+                My_Dc_Id-> get_remote_dc_list(Remote_Dc_Id-1,My_Dc_Id,ServerName_Prefix,Remote_DC_List);
+                       _-> ServerName=string:concat(ServerName_Prefix,integer_to_list(Remote_Dc_Id)),
+                           get_remote_dc_list(Remote_Dc_Id-1,My_Dc_Id,ServerName_Prefix,[ServerName|Remote_DC_List])
+
+            end.
+
+
+get_possible_deliveries(Heartbeats,Deleted,My_Logical_Clock,My_Dc_Id)->
     Min_Stable_Timestamp=get_stable_timestamp(Heartbeats),
-    deliver_labels(Min_Stable_Timestamp,Labels,Deleted,Sum_Delay).
+    deliverable_labels(Min_Stable_Timestamp,Deleted,[],My_Logical_Clock,My_Dc_Id).
 
-get_max_delay(Labels,Current_Max_Delay)->
-
-    case(orddict:size(Labels)>0) of
-        true-> Earliest_Ts=get_earliest_label_timestamp(Labels,Current_Max_Delay),
-               New_Max_Delay=riak_kv_util:get_timestamp()-Earliest_Ts,
-
-               case(New_Max_Delay>Current_Max_Delay) of
-                    true->New_Max_Delay;
-                    false->Current_Max_Delay
-               end;
-         false->Current_Max_Delay
-    end.
-
-get_earliest_label_timestamp([],Current_Max_Delay)->Current_Max_Delay;
-
-get_earliest_label_timestamp(Labels,_Current_Max_Delay)->
-    HB_List=orddict:to_list(Labels),
-    [First|Rest]=HB_List,
-    {Clock,_Label}=First,
-    lists:foldl(fun({Key,_Val},Min)->
-        %lager:info("key is ~p value is ~p ~n",[Key,Val]),
-        if
-            Key<Min-> Key;
-            true -> Min
-        end end,Clock,Rest).
-
+insert_label(Label,Partition)->
+    Label_Timestamp=Label#label.timestamp,
+    ets:insert(?Label_Table_Name,{{Label_Timestamp,Partition,Label},dt}).
 
 get_stable_timestamp(Heartbeats)->
     HB_List=dict:to_list(Heartbeats),
@@ -178,71 +226,95 @@ get_stable_timestamp(Heartbeats)->
             true -> Min
         end end,Clock,Rest).
 
-deliver_labels(_Min_Clock,[],Deleted,Sum_Deay)->{[],Deleted,Sum_Deay};
 
-deliver_labels(Min_Clock,[Head|Rest],Deleted,Sum_Delay)->
-    {Clock,List_Labels}=Head,
-    %lager:info("list label is ~p and min clock is ~p ~n",[List_Labels,Min_Clock]),
-    case (Clock =< Min_Clock) of
-         true-> {Deleted2,Sum_Delay2}=lists:foldl(fun(Label,{Deleted1,Sum_Delay1})->
-                                              %deliver labels to the other datacenters
-                                              {Deleted1+1,calculate_sum_delay(Label#label.timestamp,Sum_Delay1)}
-                                     end,{Deleted,Sum_Delay},List_Labels),
-                 %Dict1=orddict:erase(Clock,Dict),%delete all labels with Clock
-                 deliver_labels(Min_Clock,Rest,Deleted2,Sum_Delay2);
-         false->{[Head|Rest],Deleted,Sum_Delay}
+%for now batch_delivery size does not matter. If there are heavy deletes, do batchwise
+deliverable_labels(Min_Stable_Timestamp,Deleted,Batch_To_Deliver,My_Logical_Clock,My_Dc_Id)->
+    case ets:first(?Label_Table_Name)  of
+        '$end_of_table' -> {Deleted,Batch_To_Deliver,My_Logical_Clock};
+        {Timestamp,_Partition,Label}=Key when Timestamp=<Min_Stable_Timestamp ->
+            ets:delete(?Label_Table_Name,Key),
+             My_Logical_Clock1=My_Logical_Clock+1,
+             VClock1=Label#label.vector,
+             VClock2=dict:store(My_Dc_Id,My_Logical_Clock1,VClock1),
+             Label1=Label#label{vector = VClock2},% before delivery, we have to pump this dc's logical clock
+             deliverable_labels(Min_Stable_Timestamp,Deleted+1,[Label1|Batch_To_Deliver],My_Logical_Clock1,My_Dc_Id);
+        {_Timestamp,_Partition,_Label}->{Deleted,Batch_To_Deliver,My_Logical_Clock}
     end.
 
 
-calculate_sum_delay(Added_Timestamp,Sum_Delay)->
-                                                    Current_Time=riak_kv_util:get_timestamp(),
-                                                    Diff_in_Msec=(Current_Time-Added_Timestamp) div 1000,
+connect_kernal([])->
+    ok;
 
-                                                    case (Diff_in_Msec>0) of
-                                                               true->(Sum_Delay+Diff_in_Msec);
-                                                               false->Sum_Delay   %due to clock drifts or non monotonocity
-                                                               end.
+connect_kernal([Node|Rest])->
+    Status=net_kernel:connect_node(list_to_atom(Node)),
+    lager:info("connect kernal status ~p ~n",[Status]),
+    connect_kernal(Rest).
+
+getInitVector(Total_DC_Count,Dict)->
+    case Total_DC_Count of
+        0->Dict;
+        _-> Dict1=dict:store(Total_DC_Count,0,Dict),
+            getInitVector(Total_DC_Count-1,Dict1)
+    end.
+
+get_init_remote_Label_dictionary(Dict,Remote_Dc_Count,My_DC_Id)->
+    case Remote_Dc_Count of
+               0   ->Dict;
+        My_DC_Id   -> get_init_remote_Label_dictionary(Dict,Remote_Dc_Count-1,My_DC_Id);
+              _    ->Dict1=dict:store(Remote_Dc_Count,[],Dict),
+                     get_init_remote_Label_dictionary(Dict1,Remote_Dc_Count-1,My_DC_Id)
+    end.
+
+%%%===================================================================
+%%% Remote Label specific functions
+%%%===================================================================
+do_possible_delivers_to_vnodes([],My_VClock,_Sender_Dc_Id,HasChanged)->
+    {[],My_VClock,HasChanged};
+
+do_possible_delivers_to_vnodes([Head|Rest],My_VClock,Sender_Dc_Id,HasChanged)->
+    IsDeliverable=riak_kv_vclock:is_label_deliverable(My_VClock,Head#label.vector,Sender_Dc_Id),
+
+    case IsDeliverable of
+        true->Max_VClock=riak_kv_vclock:get_max_vector(My_VClock,Head#label.vector),
+              lager:info("Max Vector ~p ",[Max_VClock]),
+               %update the clock of the label, so vnodes does not need to do the same again
+              Head1=Head#label{vector = Max_VClock},
+              DocIdx = riak_core_util:chash_key(Head#label.bkey),
+              PrefList = riak_core_apl:get_primary_apl(DocIdx, 1,riak_kv),
+              [{IndexNode, _Type}] = PrefList,
+              riak_kv_vnode:deliver_stable_label(Head1,Sender_Dc_Id,IndexNode,self()),
+
+              wait_for_response(),
+
+              do_possible_delivers_to_vnodes(Rest,Max_VClock,Sender_Dc_Id,true);
+
+            _ ->{[Head|Rest],My_VClock,HasChanged}   %labels from receiver are in order, if first is not deliverable, then we cant deliver all the rest
+    end.
+
+wait_for_response()->
+    receive
+       ok ->ok
+     after 5000 ->
+        lager:info("*****TIMEOUT OCCURED AFTER SENDING A REMOTE LABEL TO A VNODE*********")
+    end.
+
+process_unsatisfied_remote_labels(Remote_LabelDict,My_Vclock)->
+    {Remote_LabelDict1,My_Vclock1,New_Scan_Needed1} = lists:foldl(fun(Key, {RLabels,MVector,NScan}) ->
+    List= dict:fetch(Key, Remote_LabelDict),
+      case List of
+            []->{RLabels,MVector,NScan};
+            _ ->{Rest,Clock,HasChanged}=do_possible_delivers_to_vnodes(List,MVector,Key,false),
+                        case HasChanged of
+                            true  -> {dict:store(Key,Rest,RLabels),Clock,true};
+                                _ -> {RLabels,MVector,NScan}
+                        end
+      end
+    end, {Remote_LabelDict,My_Vclock,false},dict:fetch_keys(Remote_LabelDict)),
+
+%if a label is delivered from 1 dc, we need to scan whole other dc list again to see whether anything else is deliverable
+       case New_Scan_Needed1 of
+              true-> process_unsatisfied_remote_labels(Remote_LabelDict1,My_Vclock1);
+              _   -> {Remote_LabelDict1,My_Vclock1}
+       end.
 
 
-%add_line_to_file(Added,Deleted,Max_Delay,FilePath)->
-%    Filename=FilePath++"/stat.txt",
- %   {_,{Hour,Min,Sec}} = erlang:localtime(),
- %   case file:read_file_info(Filename) of
- %       {error, enoent} ->
-            %    file:write_file("test.txt", io_lib:fwrite("~p.\n",[20]));  % create the file and write
-   %         {ok, IODevice} = file:open(Filename, [write]),
-   %         file:write(IODevice,  io_lib:fwrite("timestamp ~p: ~p: ~p added ~p deleted ~p max-delay ~p. \n",[Hour,Min,Sec,Added,Deleted,Max_Delay])),
-    %        file:close(IODevice);
-
-    %    {ok, _FileInfo} ->
-     %       {ok, IODevice} = file:open(Filename, [append]),io_lib:fwrite("timestamp ~p: ~p: ~p added ~p deleted ~p max-delay ~p. \n",[Hour,Min,Sec,Added,Deleted,Max_Delay]),
-     %       file:close(IODevice)
-        %file:write_file("test.txt", io_lib:fwrite("~p.\n",[10]),[append]) % append data to existing file
-    %end.
-
-%test label delivery
-ordered_dict_test()->
-    Dic=dict:new(),
-    Dic1=dict:store(1,1000,Dic),
-    Dic2=dict:store(2,999,Dic1),
-    Dic3=dict:store(3,1010,Dic2),
-    Dic4=dict:store(4,1020,Dic3),
-
-    List_Clocks=dict:to_list(Dic4),
-    Min_Clock=get_stable_timestamp(List_Clocks),
-    io:format("*****min is ******* ~p ~n",[Min_Clock]),
-
-    Dict=orddict:new(),
-    Dict1=orddict:append(1000,1000,Dict),
-    Dict2=orddict:append(999,999,Dict1),
-    Dict3=orddict:append(1000,1000,Dict2),
-    Dict4=orddict:append(1001,1001,Dict3),
-    Dict5=orddict:append(998,998,Dict4),
-    Dict7=orddict:append(998,997,Dict5),
-
-    Deleted=0,
-    Dict6=deliver_labels(Min_Clock,Dict7,Deleted,"test"),
-    print_dict(Dict6).
-
-print_dict(Dict4)->
-    lists:foldl(fun({Key,Value},_Care)->io:format("Key is ~p and value is ~p ~n",[Key,Value])  end,dict:new(),Dict4).
