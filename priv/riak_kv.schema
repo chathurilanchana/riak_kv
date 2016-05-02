@@ -520,7 +520,7 @@ end
   "buckets.default.last_write_wins",
   "riak_core.default_bucket_props.last_write_wins", [
   {datatype, {enum, [true, false]}},
-  {default, false},
+  {default, true},
   hidden
 ]}.
 
