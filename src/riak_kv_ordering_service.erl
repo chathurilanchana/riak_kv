@@ -96,7 +96,7 @@ init([ServerName]) ->
     riak_kv_receiver_perdc:assign_convergers(), %ordering service initiate the converger logic
 
     ets:new(?Label_Table_Name, [ordered_set, named_table,private]),
-    erlang:send_after(10000, self(), print_stats),
+    %erlang:send_after(10000, self(), print_stats),
     {ok, #state{heartbeats = Dict1, reg_name = ServerName,remote_dc_list = Remote_Dc_List,added = 0,
         deleted = 0,my_dc_id = My_DC_Id,my_vector = My_Vector,my_logical_clock = 0,unsatisfied_remote_labels =UnsatisfiedRemoteLabels}}.
 
