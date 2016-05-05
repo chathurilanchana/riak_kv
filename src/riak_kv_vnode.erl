@@ -714,11 +714,11 @@ handle_command({vnode_remote_delay_stats},_From,State=#state{max_visibility_dela
 handle_command(?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,sender_dc_id = Sender_DcId,timestamp = Timestamp}, _Sender, State=#state{vv=VV0,gst=GST,idx=Idx,pending_table_name = Pending_Table})->
   VV1=dict:store(Sender_DcId,Timestamp,VV0),
   State1= case GST>=Timestamp of
-               true->
+               true->lager:info("remote update applied ~n"),
                      {_Reply, UpdState} =   do_remote_put(BKey, Object, Timestamp, Options, State),
                      update_vnode_stats(vnode_put, Idx, os:timestamp()),
                      UpdState;
-               false->
+               false->lager:info("remote update added to pending list"),
                       ets:insert(Pending_Table, {{Timestamp, BKey,Object,Options}, in}),
                       State
            end,
@@ -1594,7 +1594,7 @@ apply_possible_pending_operations(GST,State,Idx,Pending_Table_Name)->
       State;
     {Timestamp, BKey,Object,Options}=Key when Timestamp =< GST ->
       State1=apply_remote_update(Timestamp,BKey,Object,Options,State,Idx),
-      %lager:info("remote pending update applied ~n"),
+      lager:info("********remote pending update applied****** ~n"),
       true = ets:delete(Pending_Table_Name, Key),
       Sum_Delay=State#state.sum_visibility_delay,Max_Delay=State#state.max_visibility_delay,Count=State#state.sum_delayed_remote_writes,
       Dict=State#state.delay_distribution,
