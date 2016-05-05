@@ -520,7 +520,7 @@ end
   "buckets.default.last_write_wins",
   "riak_core.default_bucket_props.last_write_wins", [
   {datatype, {enum, [true, false]}},
-  {default, false},
+  {default, true},
   hidden
 ]}.
 
@@ -673,27 +673,22 @@ end
 
 {mapping, "ordering_service_hb_freq", "riak_kv.ordering_service_hb_freq", [
     {datatype, integer},
-    {default, 1000}
+    {default, 100}
 ]}.
 
-{mapping, "total_dcs", "riak_kv.ordering_service_hb_freq", [
+{mapping, "gst_timer_freq", "riak_kv.gst_timer_freq", [
     {datatype, integer},
-    {default, 3}
+    {default, 100}
 ]}.
 
 {mapping, "ordering_service_total_dcs", "riak_kv.ordering_service_total_dcs", [
     {datatype, integer},
-    {default, 3}
+    {default, 2}
 ]}.
 
 {mapping, "ordering_service_my_dc_id", "riak_kv.ordering_service_my_dc_id", [
     {datatype, integer},
     {default, 1}
-]}.
-
-{mapping, "stat_name", "riak_kv.stat_name", [
-  {datatype, directory},
-  {default, "/home/chathuri"}
 ]}.
 
 {mapping, "myip", "riak_kv.myip", [

@@ -29,6 +29,7 @@
 
 -record(riak_kv_get_req_v1, {
           bkey :: {binary(), binary()},
+          gst,
           req_id :: non_neg_integer()}).
 
 -record(riak_kv_listkeys_req_v2, {

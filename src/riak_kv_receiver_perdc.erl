@@ -55,10 +55,27 @@ init([ServerName]) ->
   My_DC_Id=app_helper:get_env(riak_kv,ordering_service_my_dc_id),
   Total_Dcs=app_helper:get_env(riak_kv,ordering_service_total_dcs),
   {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+  GrossPrefLists = riak_core_ring:all_preflists(Ring, 1),
+  ZeroPreflist = lists:foldl(fun(PrefList, Acc) ->
+    case hd(PrefList) of
+      {0, _Node} ->
+        hd(PrefList);
+      {_OtherPartition, _Node} ->
+        Acc
+    end
+                             end, not_found, GrossPrefLists),
   Nodes = riak_core_ring:all_members(Ring),
   Propagators =  [list_to_atom(atom_to_list(Node) ++ atom_to_list(?RECEIVER_PER_NODE)) || Node <- Nodes],
   lager:info("PROPAGATORS SEEN BY RECEIVER PER DC ARE ~p ~n",[Propagators]),
-
+  case ZeroPreflist of
+    not_found ->
+      lager:info("********Zero preflist not found***************", []);
+    _ ->
+      lists:foreach(fun(Name) ->
+        ok = riak_kv_data_propagator:set_zeropl(Name, ZeroPreflist)
+                    end, Propagators)
+  end,
+  lager:info("zero pref list is ~p ~n",[ZeroPreflist]),
   {ok, #state{my_propagators  = Propagators,my_dc_id = My_DC_Id,total_dcs = Total_Dcs,reg_name = ServerName}}.
 
 %assign all receivers grouped by dcid to the vnodes
@@ -71,7 +88,9 @@ handle_call(assign_convergers, _From, State=#state{my_dc_id=MyId,total_dcs = Tot
 
   %send scattered list to all members in my ring
   lists:foreach(fun(PrefList) ->
-      ok = riak_kv_vnode:set_receivers(hd(PrefList), Dict3)
+      ok = riak_kv_vnode:set_receivers(hd(PrefList), Dict3),
+           riak_kv_vnode:send_heartbeat(hd(PrefList)),
+           riak_kv_vnode:compute_gst(hd(PrefList))
                 end, GrossPrefLists),
 
   {reply,ok,State#state{scattered_receivers = Dict3}};

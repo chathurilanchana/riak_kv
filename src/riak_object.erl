@@ -98,6 +98,7 @@
 -export([is_robject/1]).
 -export([update_last_modified/1, update_last_modified/2]).
 -export([strict_descendant/2]).
+-export([replace_value/2]).
 
 %% @doc Constructor for new riak objects.
 -spec new(Bucket::bucket(), Key::key(), Value::value()) -> riak_object().
@@ -638,6 +639,11 @@ update_metadata(Object=#r_object{}, M) ->
 %% @doc  Set the updated value of an object to V
 -spec update_value(riak_object(), value()) -> riak_object().
 update_value(Object=#r_object{}, V) -> Object#r_object{updatevalue=V}.
+
+replace_value(Object=#r_object{}, V)->[Content|_]= Object#r_object.contents,
+                                       NewCont=Content#r_content{value = V},
+                                      Object#r_object{contents =[NewCont] } .
+
 
 %% @doc  Return the updated metadata of this riak_object.
 -spec get_update_metadata(riak_object()) -> riak_object_dict().

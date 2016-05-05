@@ -66,7 +66,7 @@
                 timeout :: infinity | pos_integer(),
                 tref    :: reference(),
                 bkey :: {riak_object:bucket(), riak_object:key()},
-                clock::non_neg_integer(), %keep track of client clock
+                gst ::non_neg_integer(), %keep track of client clock
                 bucket_props,
                 startnow :: {non_neg_integer(), non_neg_integer(), non_neg_integer()},
                 get_usecs :: non_neg_integer(),
@@ -89,11 +89,11 @@
 %% ===================================================================
 
 %% In place only for backwards compatibility
-start(ReqId,Bucket,Key,MaxTS,R,Timeout,From) ->
-    start_link({raw, ReqId, From}, Bucket, Key,MaxTS, [{r, R}, {timeout, Timeout}]).
+start(ReqId,Bucket,Key,GST,R,Timeout,From) ->
+    start_link({raw, ReqId, From}, Bucket, Key,GST, [{r, R}, {timeout, Timeout}]).
 
-start_link(ReqId,Bucket,Key,MaxTS,R,Timeout,From) ->
-    start_link({raw, ReqId, From}, Bucket, Key,MaxTS, [{r, R}, {timeout, Timeout}]).
+start_link(ReqId,Bucket,Key,GST,R,Timeout,From) ->
+    start_link({raw, ReqId, From}, Bucket, Key,GST, [{r, R}, {timeout, Timeout}]).
 
 %% @doc Start the get FSM - retrieve Bucket/Key with the options provided
 %%
@@ -105,14 +105,14 @@ start_link(ReqId,Bucket,Key,MaxTS,R,Timeout,From) ->
 %% {timeout, pos_integer() | infinity} -  Timeout for vnode responses
 -spec start_link({raw, req_id(), pid()}, binary(), binary(),non_neg_integer(), options()) ->
                         {ok, pid()} | {error, any()}.
-start_link(From, Bucket, Key,MaxTS, GetOptions) ->
+start_link(From, Bucket, Key,GST, GetOptions) ->
     case whereis(riak_kv_get_fsm_sj) of
         undefined ->
             %% Overload protection disabled 
-            Args = [From, Bucket, Key,MaxTS, GetOptions, true],
+            Args = [From, Bucket, Key,GST, GetOptions, true],
             gen_fsm:start_link(?MODULE, Args, []);
         _ ->
-            Args = [From, Bucket, Key,MaxTS, GetOptions, false],
+            Args = [From, Bucket, Key,GST, GetOptions, false],
             case sidejob_supervisor:start_child(riak_kv_get_fsm_sj,
                                                 gen_fsm, start_link,
                                                 [?MODULE, Args, []]) of
@@ -148,13 +148,13 @@ test_link(From, Bucket, Key,MaxTS, GetOptions, StateProps) ->
 %% ====================================================================
 
 %% @private
-init([From, Bucket, Key,MaxTS, Options0, Monitor]) ->
+init([From, Bucket, Key,GST, Options0, Monitor]) ->
     StartNow = os:timestamp(),
     Options = proplists:unfold(Options0),
     StateData = #state{from = From,
                        options = Options,
                        bkey = {Bucket, Key},
-                       clock = MaxTS,
+                       gst = GST,
                        timing = riak_kv_fsm_timing:add_timing(prepare, []),
                        startnow = StartNow},
     (Monitor =:= true) andalso riak_kv_get_put_monitor:get_fsm_spawned(self()),
@@ -298,7 +298,7 @@ validate_quorum(_R, _ROpt, _N, _PR, _PROpt, _NumPrimaries, _NumVnodes) ->
 
 %MaxTS to be used when integrating with Manuel's
 execute(timeout, StateData0=#state{timeout=Timeout,req_id=ReqId,
-                                   bkey=BKey,clock = _MaxTS, trace=Trace,
+                                   bkey=BKey, gst = GST, trace=Trace,
                                    preflist2 = Preflist2}) ->
     TRef = schedule_timeout(Timeout),
     Preflist = [IndexNode || {IndexNode, _Type} <- Preflist2],
@@ -310,7 +310,7 @@ execute(timeout, StateData0=#state{timeout=Timeout,req_id=ReqId,
         _ ->
             ok
     end,
-    riak_kv_vnode:get(Preflist, BKey, ReqId),
+    riak_kv_vnode:get(Preflist, BKey, ReqId,GST),
     StateData = StateData0#state{tref=TRef},
     new_state(waiting_vnode_r, StateData).
 
@@ -325,7 +325,7 @@ preflist_for_tracing(Preflist) ->
      end || {Idx, Nd} <- lists:sublist(Preflist, 4)].
 
 %% @private
-waiting_vnode_r({r, VnodeResult, Idx, _ReqId}, StateData = #state{get_core = GetCore,
+waiting_vnode_r({r, VnodeResult, Idx, _ReqId,GST}, StateData = #state{get_core = GetCore,
                                                                   trace=Trace}) ->
     case Trace of
         true ->
@@ -339,7 +339,7 @@ waiting_vnode_r({r, VnodeResult, Idx, _ReqId}, StateData = #state{get_core = Get
     case riak_kv_get_core:enough(UpdGetCore) of
         true ->
             {Reply, UpdGetCore2} = riak_kv_get_core:response(UpdGetCore),
-            NewStateData = client_reply(Reply, StateData#state{get_core = UpdGetCore2}),
+            NewStateData = client_reply({Reply,GST}, StateData#state{get_core = UpdGetCore2}),
             update_stats(Reply, NewStateData),
             maybe_finalize(NewStateData);
         false ->

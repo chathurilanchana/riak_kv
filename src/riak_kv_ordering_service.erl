@@ -72,17 +72,6 @@ init([ServerName]) ->
     List_Ips= string:tokens(Cluster_Ips, ","),
     connect_kernal(List_Ips), %need to connect manually, otherwise gen_server msgs not receive outside cluster
 
-    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    Num_Partitions=riak_core_ring:num_partitions(Ring),
-    lager:info("total partitions are ~p and server name is ~p",[Num_Partitions,ServerName]),
-
-    GrossPrefLists = riak_core_ring:all_preflists(Ring, 1),
-    Dict1 = lists:foldl(fun(PrefList, Dict) ->
-        {Partition, _Node} = hd(PrefList),
-        riak_kv_vnode:heartbeat(PrefList),
-        dict:store(Partition, 0, Dict)
-                       end, dict:new(), GrossPrefLists),
-    lager:info("dictionary size is ~p ~n",[dict:size(Dict1)]),
 
     My_DC_Id=app_helper:get_env(riak_kv,ordering_service_my_dc_id),
     ServerName=string:concat(?STABILIZER_PREFIX,integer_to_list(My_DC_Id)),
@@ -94,10 +83,7 @@ init([ServerName]) ->
     UnsatisfiedRemoteLabels= get_init_remote_Label_dictionary(dict:new(),Remote_Dc_Count,My_DC_Id),
 
     riak_kv_receiver_perdc:assign_convergers(), %ordering service initiate the converger logic
-
-    ets:new(?Label_Table_Name, [ordered_set, named_table,private]),
-    erlang:send_after(10000, self(), print_stats),
-    {ok, #state{heartbeats = Dict1, reg_name = ServerName,remote_dc_list = Remote_Dc_List,added = 0,
+    {ok, #state{ reg_name = ServerName,remote_dc_list = Remote_Dc_List,added = 0,
         deleted = 0,my_dc_id = My_DC_Id,my_vector = My_Vector,my_logical_clock = 0,unsatisfied_remote_labels =UnsatisfiedRemoteLabels}}.
 
 
