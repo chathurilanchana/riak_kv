@@ -48,6 +48,7 @@
          overload_reply/1,
          get_backend_config/3,
          get_timestamp/0,
+         get_formatted_update_ts/1,
          get_timestamp_in_msec/0,
          current_monotonic_time/0,
          is_modfun_allowed/2]).
@@ -469,6 +470,13 @@ is_modfun_allowed(Mod, _Fun) ->
 get_timestamp()->
     {MegaSecs, Secs, MicroSecs}=os:timestamp(),
     (MegaSecs * 1000000 + Secs) * 1000000 + MicroSecs.
+
+get_formatted_update_ts(Timestamp)->
+    SecsTotal=Timestamp div 1000000,
+    Micros=Timestamp rem 1000000,
+    Megasecs=SecsTotal div 1000000,
+    Secs_Rem=SecsTotal rem 1000000,
+    {Megasecs,Secs_Rem,Micros}.
 
 get_timestamp_in_msec()->
     get_timestamp()/1000.
