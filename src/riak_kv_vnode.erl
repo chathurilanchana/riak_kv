@@ -719,7 +719,8 @@ handle_command(?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,send
                      update_vnode_stats(vnode_put, Idx, os:timestamp()),
                      UpdState;
                false->%lager:info("remote update added to pending list"),
-                      ets:insert(Pending_Table, {{Timestamp, BKey,Object,Options}, in}),
+                      Current_Time=riak_kv_util:get_timestamp(),
+                      ets:insert(Pending_Table, {{Timestamp, BKey,Object,Options,Current_Time}, in}),
                       State
            end,
 
@@ -1592,14 +1593,14 @@ apply_possible_pending_operations(GST,State,Idx,Pending_Table_Name)->
   case ets:first(Pending_Table_Name) of
     '$end_of_table' ->
       State;
-    {Timestamp, BKey,Object,Options}=Key when Timestamp =< GST ->
+    {Timestamp, BKey,Object,Options,Receive_Time}=Key when Timestamp =< GST ->
       State1=apply_remote_update(Timestamp,BKey,Object,Options,State,Idx),
       %lager:info("********remote pending update applied****** ~n"),
       true = ets:delete(Pending_Table_Name, Key),
       Sum_Delay=State#state.sum_visibility_delay,Max_Delay=State#state.max_visibility_delay,Count=State#state.sum_delayed_remote_writes,
       Dict=State#state.delay_distribution,
       Current_Time=riak_kv_util:get_timestamp(),
-      Delay=Current_Time-Timestamp,
+      Delay=Current_Time-Receive_Time, %we only consider the waiting time at vnode
       {Sum_Delay1,Max_Delay1,Count1,Dict1} = case Delay>0 of
                                               true->   Rem=Delay div 20000,%convert delay to ms,and 20 range
                                                        DictNew=case orddict:find(Rem,Dict) of
