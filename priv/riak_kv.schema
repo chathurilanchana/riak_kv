@@ -673,7 +673,7 @@ end
 
 {mapping, "ordering_service_hb_freq", "riak_kv.ordering_service_hb_freq", [
     {datatype, integer},
-    {default, 100}
+    {default, 10}
 ]}.
 
 {mapping, "ordering_service_total_dcs", "riak_kv.ordering_service_total_dcs", [
