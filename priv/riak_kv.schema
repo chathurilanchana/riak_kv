@@ -673,17 +673,17 @@ end
 
 {mapping, "ordering_service_hb_freq", "riak_kv.ordering_service_hb_freq", [
     {datatype, integer},
-    {default, 100}
+    {default, 10}
 ]}.
 
 {mapping, "gst_timer_freq", "riak_kv.gst_timer_freq", [
     {datatype, integer},
-    {default, 100}
+    {default, 5}
 ]}.
 
 {mapping, "ordering_service_total_dcs", "riak_kv.ordering_service_total_dcs", [
     {datatype, integer},
-    {default, 2}
+    {default, 3}
 ]}.
 
 {mapping, "ordering_service_my_dc_id", "riak_kv.ordering_service_my_dc_id", [
