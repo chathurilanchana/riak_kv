@@ -538,7 +538,7 @@ init([Index]) ->
                            ordering_service_hb_freq = Ordering_Service_Hb_Freq,
                            my_dc_id = My_DC_Id,
                            dc_vector =DC_Vector,
-                            delay_distribution = orddict:new(),
+                            delay_distribution = dict:new(),
                             max_visibility_delay = 0,
                             sum_visibility_delay = 0,
                             sum_delayed_remote_writes=0,
@@ -642,9 +642,9 @@ handle_command({vnode_remote_delay_stats},_From,State=#state{max_visibility_dela
                   end,
         lager:info("===============avg delay is ~p max delay is ~p total remote writes ~p ==",[Avg,Max_Delay,Count]),
         lists:foreach(fun(Id) ->
-                 Delay_Count=  orddict:fetch(Id,Dict),
-                 lager:info("key is ~p ms count is ~p ~n",[Id*20,Delay_Count])
-                end, orddict:fetch_keys(Dict)),
+                 Delay_Count=  dict:fetch(Id,Dict),
+                 lager:info("key is ~p ms count is ~p ~n",[Id*5,Delay_Count])
+                end, dict:fetch_keys(Dict)),
          {noreply,State};
 
 %when receives a label, check whether data is available, if so apply it and update the vector, otherwise wait for data
@@ -668,10 +668,16 @@ handle_command({stable_label,Label,Sender_Dc_Id,Sender},_From,State=#state{label
                                         {Sum_Delay1,Max_Delay1,Dict1,Count1}=case Delay>0 of
                                                                       true->
                                                                             NewMaxDelay=max(Delay,Max_Delay),
-                                                                            Rem=Delay div 20000,%convert delay to ms,and 20 range
-                                                                            DictNew=case orddict:find(Rem,Dict) of
-                                                                                  {ok,Value}->orddict:store(Rem,Value+1,Dict);
-                                                                                  error->orddict:store(Rem,1,Dict)
+                                                                            Rem=Delay div 5000,%convert delay to ms,and 20 range
+
+                                                                            Rem1=case Rem>100 of
+                                                                                   true->100;
+                                                                                   _   ->Rem
+                                                                                 end,
+
+                                                                            DictNew=case dict:find(Rem1,Dict) of
+                                                                                  {ok,Value}->dict:store(Rem1,Value+1,Dict);
+                                                                                  error->dict:store(Rem1,1,Dict)
                                                                                 end,
                                                                             {Delay+Sum_Delay,NewMaxDelay,DictNew,Count+1};
                                                                        _   ->{Sum_Delay,Max_Delay,Dict,Count}
