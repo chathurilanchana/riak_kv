@@ -707,7 +707,7 @@ handle_command({vnode_remote_delay_stats},_From,State=#state{max_visibility_dela
         lager:info("===============avg delay is ~p max delay is ~p total remote writes ~p ==",[Avg,Max_Delay,Count]),
         lists:foreach(fun(Id) ->
                 Delay_Count=  orddict:fetch(Id,Dict),
-                lager:info("key is ~p ms count is ~p ~n",[Id*20,Delay_Count])
+                lager:info("key is ~p ms count is ~p ~n",[Id*5,Delay_Count])
                            end, orddict:fetch_keys(Dict)),
         {noreply,State};
 
@@ -1602,7 +1602,7 @@ apply_possible_pending_operations(GST,State,Idx,Pending_Table_Name)->
       Current_Time=riak_kv_util:get_timestamp(),
       Delay=Current_Time-Receive_Time, %we only consider the waiting time at vnode
       {Sum_Delay1,Max_Delay1,Count1,Dict1} = case Delay>0 of
-                                              true->   Rem=Delay div 20000,%convert delay to ms,and 20 range
+                                              true->   Rem=Delay div 5000,%convert delay to ms,and 20 range
                                                        DictNew=case orddict:find(Rem,Dict) of
                                                                     {ok,Value}->orddict:store(Rem,Value+1,Dict);
                                                                       error->orddict:store(Rem,1,Dict)
