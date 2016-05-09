@@ -561,7 +561,7 @@ init([Index]) ->
                             max_visibility_delay = 0,
                             sum_visibility_delay = 0,
                             sum_delayed_remote_writes=0,
-                            delay_distribution = orddict:new(),
+                            delay_distribution = dict:new(),
                            async_folding=AsyncFolding,
                            mod=Mod,
                            async_put = DoAsyncPut,
@@ -706,9 +706,9 @@ handle_command({vnode_remote_delay_stats},_From,State=#state{max_visibility_dela
                   end,
         lager:info("===============avg delay is ~p max delay is ~p total remote writes ~p ==",[Avg,Max_Delay,Count]),
         lists:foreach(fun(Id) ->
-                Delay_Count=  orddict:fetch(Id,Dict),
+                Delay_Count=  dict:fetch(Id,Dict),
                 lager:info("key is ~p ms count is ~p ~n",[Id*5,Delay_Count])
-                           end, orddict:fetch_keys(Dict)),
+                           end, dict:fetch_keys(Dict)),
         {noreply,State};
 
 handle_command(?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,sender_dc_id = Sender_DcId,timestamp = Timestamp}, _Sender, State=#state{vv=VV0,gst=GST,idx=Idx,pending_table_name = Pending_Table})->
@@ -774,7 +774,7 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
 
 handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId,gst = GSTC},Sender,State=#state{gst=GST}) ->
     GST1=max(GSTC,GST),
-    %lager:info("gst received is ~p vnode gst is ~p max is ~p ~n",[GSTC,GST,GST1]),
+    lager:info("gst received is ~p vnode gst is ~p max is ~p ~n",[GSTC,GST,GST1]),
     do_get(Sender, BKey, ReqId, State#state{gst=GST1});
 handle_command(#riak_kv_listkeys_req_v2{bucket=Input, req_id=ReqId, caller=Caller}, _Sender,
                State=#state{async_folding=AsyncFolding,
@@ -1602,10 +1602,15 @@ apply_possible_pending_operations(GST,State,Idx,Pending_Table_Name)->
       Current_Time=riak_kv_util:get_timestamp(),
       Delay=Current_Time-Receive_Time, %we only consider the waiting time at vnode
       {Sum_Delay1,Max_Delay1,Count1,Dict1} = case Delay>0 of
-                                              true->   Rem=Delay div 5000,%convert delay to ms,and 20 range
-                                                       DictNew=case orddict:find(Rem,Dict) of
-                                                                    {ok,Value}->orddict:store(Rem,Value+1,Dict);
-                                                                      error->orddict:store(Rem,1,Dict)
+                                              true->   Rem=Delay div 5000,%convert delay to ms,and 5 range
+                                                       Rem1=case Rem >100 of %accumulate under 500ms if delay >500ms
+                                                              true->100;
+                                                              _   ->Rem
+                                                            end,
+
+                                                       DictNew=case dict:find(Rem1,Dict) of
+                                                                    {ok,Value}->dict:store(Rem1,Value+1,Dict);
+                                                                      error->dict:store(Rem1,1,Dict)
                                                                end,
                                                        Max_DelayNew=max(Delay,Max_Delay),
                                                        {Sum_Delay+Delay,Max_DelayNew,Count+1,DictNew};
