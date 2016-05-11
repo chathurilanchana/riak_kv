@@ -649,7 +649,7 @@ handle_command({vnode_remote_delay_stats},_From,State=#state{max_visibility_dela
 
 %when receives a label, check whether data is available, if so apply it and update the vector, otherwise wait for data
 handle_command({stable_label,Label,Sender_Dc_Id,Sender},_From,State=#state{label_data_storage = Label_Data_storage,idx = Idx,sum_visibility_delay =Sum_Delay,max_visibility_delay = Max_Delay,
-  delay_distribution = Dict,sum_delayed_remote_writes = Count })->
+  delay_distribution = Dict,sum_delayed_remote_writes = Count,dc_vector = Remote_VV})->
   %lager:info("A deliverable label is received from ~p label is ~p",[Sender_Dc_Id,Label]),
   {_Bucket,Key}=Label#label.bkey,
   <<Integer_Key:32/big>>=Key,
@@ -683,9 +683,9 @@ handle_command({stable_label,Label,Sender_Dc_Id,Sender},_From,State=#state{label
                                                                        _   ->{Sum_Delay,Max_Delay,Dict,Count}
                                                                    end,
 
-
+                                         Max_Remote_VV=riak_kv_vclock:get_max_vector(Label#label.vector,Remote_VV),
                                          update_vnode_stats(vnode_put, Idx, os:timestamp()),%data has been received
-                                        {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector = Label#label.vector,sum_visibility_delay = Sum_Delay1,max_visibility_delay = Max_Delay1,delay_distribution = Dict1,sum_delayed_remote_writes = Count1}};
+                                        {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector = Max_Remote_VV,sum_visibility_delay = Sum_Delay1,max_visibility_delay = Max_Delay1,delay_distribution = Dict1,sum_delayed_remote_writes = Count1}};
 
                                       _  ->%lager:info("cant apply label at vnode, data not received"),
                                          {dict:store(Label_Data_Key,{Sender,Label#label.vector},Label_Data_storage),State}
@@ -693,18 +693,20 @@ handle_command({stable_label,Label,Sender_Dc_Id,Sender},_From,State=#state{label
 
   {noreply,State1#state{label_data_storage =Label_Data_storage1 }};
 
-handle_command(?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,sender_dc_id = Sender_DcId,timestamp = Timestamp}, _Sender, State=#state{idx=Idx,label_data_storage = Label_Data_storage})->
+handle_command(?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,sender_dc_id = Sender_DcId,timestamp = Timestamp}, _Sender, State=#state{idx=Idx,label_data_storage = Label_Data_storage,dc_vector = Remote_VV})->
   %lager:info("vnode received remote data"),
   {_Bucket,Key}=BKey,
   <<Integer_Key:32/big>>=Key,
   Label_Data_Key={Sender_DcId,Integer_Key,Timestamp},
   {Label_Data_storage1,State1}= case dict:find(Label_Data_Key,Label_Data_storage) of
-                                   {ok,{Sender,Vector}}-> StartTime = riak_core_util:moment(),
+                                   {ok,{Sender,Vector}}->
+                                        StartTime = riak_core_util:moment(),
                                        {_Reply, UpdState} = do_remote_put(BKey,  Object, StartTime, Options, State),
                                        %lager:info("Remote update from ~p applied at vnode",[Sender_DcId]),
                                        update_vnode_stats(vnode_put, Idx, os:timestamp()),
                                        Sender!ok,
-                                       {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector =Vector}};
+                                       Max_Remote_VV=riak_kv_vclock:get_max_vector(Vector,Remote_VV),
+                                       {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector =Max_Remote_VV}};
 
                                    _  -> %lager:info("cant apply data at vnode, waiting for label"),
                                         Received_Object=#remote_received_data{object = Object,options = Options,received_time = riak_kv_util:get_timestamp()},
@@ -722,7 +724,7 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
     StartTS = os:timestamp(),
     PhysicalTS=riak_kv_util:get_timestamp(),  %if not working change to current_monotonic_time()
     MaxTS0=max(Clock+1,max(PhysicalTS,MaxTS+1)), %retrieve the hybrid clock
-    Max_Dc_Vector=riak_kv_vclock:get_max_vector(CVector,DC_Vector) ,
+    Max_Dc_Vector=riak_kv_vclock:get_max_vector(DC_Vector,CVector) ,
 
     NewObj=riak_object:replace_value(Object,{riak_object:get_value(Object),term_to_binary(MaxTS0)}),
     Formatted_MaxTS=riak_kv_util:get_formatted_update_ts(MaxTS0),

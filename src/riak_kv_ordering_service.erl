@@ -31,7 +31,7 @@
 
 %delay- average delay between receiving and delivering a label
 -record(state, {heartbeats,reg_name,added,deleted,remote_dc_list,my_dc_id,my_logical_clock,
-    my_vector,unsatisfied_remote_labels}).
+    remote_vector,unsatisfied_remote_labels}).
 
 %%%===================================================================
 %%% API
@@ -90,7 +90,7 @@ init([ServerName]) ->
     Remote_Dc_Count=app_helper:get_env(riak_kv,ordering_service_total_dcs),
     Remote_Dc_List=get_remote_dc_list(Remote_Dc_Count,My_DC_Id,?STABILIZER_PREFIX,[]),
     lager:info("reomte dc list is ~p ~n",[Remote_Dc_List]),
-    My_Vector=getInitVector(Remote_Dc_Count,dict:new()),%indicates the updates received from remote dcs
+     Remote_Vector=getInitVector(Remote_Dc_Count,My_DC_Id,dict:new()),%indicates the updates received from remote dcs
     UnsatisfiedRemoteLabels= get_init_remote_Label_dictionary(dict:new(),Remote_Dc_Count,My_DC_Id),
 
     riak_kv_receiver_perdc:assign_convergers(), %ordering service initiate the converger logic
@@ -98,7 +98,7 @@ init([ServerName]) ->
     ets:new(?Label_Table_Name, [ordered_set, named_table,private]),
     %erlang:send_after(10000, self(), print_stats),
     {ok, #state{heartbeats = Dict1, reg_name = ServerName,remote_dc_list = Remote_Dc_List,added = 0,
-        deleted = 0,my_dc_id = My_DC_Id,my_vector = My_Vector,my_logical_clock = 0,unsatisfied_remote_labels =UnsatisfiedRemoteLabels}}.
+        deleted = 0,my_dc_id = My_DC_Id,remote_vector = Remote_Vector,my_logical_clock = 0,unsatisfied_remote_labels =UnsatisfiedRemoteLabels}}.
 
 
 handle_call({trigger},_From, State=#state{added = Added,deleted = Deleted}) ->
@@ -112,49 +112,46 @@ handle_call(_Request, _From, State) ->
 
 %no batching as in this case frequency is low
 handle_cast({add_label,Label,Partition},State=#state{heartbeats = Heartbeats,my_dc_id = My_Dc_Id,
-    remote_dc_list = Remote_Dc_List,added = Added,deleted = Deleted,my_logical_clock = My_Logical_Clock,my_vector = Vclock})->
+    remote_dc_list = Remote_Dc_List,added = Added,deleted = Deleted,my_logical_clock = My_Logical_Clock})->
 
     insert_label(Label,Partition),
     Added1=Added+1,
     Heartbeats1= dict:store(Partition,Label#label.timestamp,Heartbeats),
     {Deleted1,Batch_To_Deliver,My_Logical_Clock1}= get_possible_deliveries(Heartbeats1,Deleted,My_Logical_Clock,My_Dc_Id),
 
-    Vclock1=dict:store(My_Dc_Id,My_Logical_Clock1,Vclock),
-
     case Batch_To_Deliver of
         [] ->noop;
         _  ->ReversedBatch_To_Deliver=lists:reverse(Batch_To_Deliver), %as we append deleted to head, need to reverse to get in ascending order
              deliver_to_remote_dcs(ReversedBatch_To_Deliver,My_Dc_Id,Remote_Dc_List)
     end,
-    State1=State#state{heartbeats = Heartbeats,my_vector=Vclock1,added = Added1,deleted = Deleted1,my_logical_clock = My_Logical_Clock1},
+    State1=State#state{heartbeats = Heartbeats,added = Added1,deleted = Deleted1,my_logical_clock = My_Logical_Clock1},
     {noreply,State1};
 
 handle_cast({partition_heartbeat,Clock,Partition},State=#state{heartbeats = Heartbeats,my_dc_id = My_Dc_Id,remote_dc_list = Remote_Dc_List,deleted = Deleted
-    ,my_logical_clock = My_Logical_Clock,my_vector = Vclock})->
+    ,my_logical_clock = My_Logical_Clock})->
 
     Heartbeats1=dict:store(Partition,Clock,Heartbeats),
     {Deleted1,Batch_To_Deliver,My_Logical_Clock1}= get_possible_deliveries(Heartbeats1,Deleted,My_Logical_Clock,My_Dc_Id),
-    Vclock1=dict:store(My_Dc_Id,My_Logical_Clock1,Vclock) ,
 
     case Batch_To_Deliver of
         [] ->noop;
         _  -> ReversedBatch_To_Deliver=lists:reverse(Batch_To_Deliver),
              deliver_to_remote_dcs(ReversedBatch_To_Deliver,My_Dc_Id,Remote_Dc_List)
     end,
-    State1=State#state{heartbeats = Heartbeats1,my_logical_clock = My_Logical_Clock1,my_vector =Vclock1,deleted = Deleted1},
+    State1=State#state{heartbeats = Heartbeats1,my_logical_clock = My_Logical_Clock1,deleted = Deleted1},
     {noreply,State1};
 
 %#dcs>3, otherwise we dont need any blocking.
-handle_cast({remote_labels,Batch_To_Deliver,Sender_Dc_Id},State=#state{my_vector = My_VClock, unsatisfied_remote_labels = Remote_LabelDict})->
-     %lager:info("received remote labels ~p from ~p ~n",[Batch_To_Deliver,Sender_Dc_Id]),
-     [Head|_]=Batch_To_Deliver,  %the smallest one on the head
-     IsDeliverable=riak_kv_vclock:is_label_deliverable(My_VClock,Head#label.vector,Sender_Dc_Id),
+handle_cast({remote_labels,Batch_To_Deliver,Sender_Dc_Id},State=#state{remote_vector = Remote_VClock, unsatisfied_remote_labels = Remote_LabelDict,my_dc_id = My_Id})->
+     [Head|_]=Batch_To_Deliver,
+     Remote_Received=dict:erase(My_Id,Head#label.vector),
+     IsDeliverable=riak_kv_vclock:is_label_deliverable(Remote_VClock,Remote_Received,Sender_Dc_Id),
 
      %we only check this if head is deliverable from received batch
 {Remote_LabelDict2,My_Vclock2}=
      case IsDeliverable of
          true->%lager:info("YEYYYYYYYYY RECEIVED SOMETHING DELIVERABLE"),
-               {Remaining,My_Vclock1,_HasChanged}=do_possible_delivers_to_vnodes(Batch_To_Deliver,My_VClock,Sender_Dc_Id,false),
+               {Remaining,My_Vclock1,_HasChanged}=do_possible_delivers_to_vnodes(Batch_To_Deliver,Remote_VClock,Sender_Dc_Id,My_Id,false),
                Remote_LabelDict1= case Remaining of
                                            []->Remote_LabelDict;
                                            Labels->Old_From_Receiver=dict:fetch(Sender_Dc_Id,Remote_LabelDict),
@@ -163,15 +160,14 @@ handle_cast({remote_labels,Batch_To_Deliver,Sender_Dc_Id},State=#state{my_vector
                                        end,
 
 %after delivering received, we need to check whether we can delete any in the unsatisfied list
-%todo: this call may do several unnecessary checks. Improve (Proably keeping track of vector and decide removal by that)!!!!
-                process_unsatisfied_remote_labels(Remote_LabelDict1,My_Vclock1);
+                process_unsatisfied_remote_labels(Remote_LabelDict1,My_Vclock1,My_Id);
 
 %nothing to deliver, append received to the sender's list
             _-> Old_From_Receiver=dict:fetch(Sender_Dc_Id,Remote_LabelDict),
                 Labels1=Old_From_Receiver ++ Batch_To_Deliver,
-                {dict:store(Sender_Dc_Id,Labels1,Remote_LabelDict),My_VClock}
+                {dict:store(Sender_Dc_Id,Labels1,Remote_LabelDict),Remote_VClock}
      end,
-    {noreply,State#state{my_vector = My_Vclock2,unsatisfied_remote_labels = Remote_LabelDict2}};
+    {noreply,State#state{remote_vector = My_Vclock2,unsatisfied_remote_labels = Remote_LabelDict2}};
 
 handle_cast(_Request, State) ->
     lager:error("received an unexpected  message ~n"),
@@ -250,11 +246,12 @@ connect_kernal([Node|Rest])->
     lager:info("connect kernal status ~p ~n",[Status]),
     connect_kernal(Rest).
 
-getInitVector(Total_DC_Count,Dict)->
+getInitVector(Total_DC_Count,My_Id,Dict)->
     case Total_DC_Count of
-        0->Dict;
-        _-> Dict1=dict:store(Total_DC_Count,0,Dict),
-            getInitVector(Total_DC_Count-1,Dict1)
+         0->Dict;
+      My_Id -> getInitVector(Total_DC_Count-1,My_Id,Dict);
+         _-> Dict1=dict:store(Total_DC_Count,0,Dict),
+            getInitVector(Total_DC_Count-1,My_Id,Dict1)
     end.
 
 get_init_remote_Label_dictionary(Dict,Remote_Dc_Count,My_DC_Id)->
@@ -268,15 +265,18 @@ get_init_remote_Label_dictionary(Dict,Remote_Dc_Count,My_DC_Id)->
 %%%===================================================================
 %%% Remote Label specific functions
 %%%===================================================================
-do_possible_delivers_to_vnodes([],My_VClock,_Sender_Dc_Id,HasChanged)->
+do_possible_delivers_to_vnodes([],My_VClock,_Sender_Dc_Id,_My_Id,HasChanged)->
     {[],My_VClock,HasChanged};
 
-do_possible_delivers_to_vnodes([Head|Rest],My_VClock,Sender_Dc_Id,HasChanged)->
-    IsDeliverable=riak_kv_vclock:is_label_deliverable(My_VClock,Head#label.vector,Sender_Dc_Id),
+do_possible_delivers_to_vnodes([Head|Rest],My_VClock,Sender_Dc_Id,My_Id,HasChanged)->
+    Received_VClock=Head#label.vector,
+    Received_Remote_Vclock=dict:erase(My_Id,Received_VClock),
+    IsDeliverable=riak_kv_vclock:is_label_deliverable(My_VClock,Received_Remote_Vclock,Sender_Dc_Id),
 
     case IsDeliverable of
-        true->Max_VClock=riak_kv_vclock:get_max_vector(My_VClock,Head#label.vector),
-               %update the clock of the label, so vnodes does not need to do the same again
+        true->
+              Max_VClock=riak_kv_vclock:get_max_vector(My_VClock,Received_Remote_Vclock),
+               %update the clock of the label
               Head1=Head#label{vector = Max_VClock},
               DocIdx = riak_core_util:chash_key(Head#label.bkey),
               PrefList = riak_core_apl:get_primary_apl(DocIdx, 1,riak_kv),
@@ -285,7 +285,7 @@ do_possible_delivers_to_vnodes([Head|Rest],My_VClock,Sender_Dc_Id,HasChanged)->
 
               wait_for_response(),
 
-              do_possible_delivers_to_vnodes(Rest,Max_VClock,Sender_Dc_Id,true);
+              do_possible_delivers_to_vnodes(Rest,Max_VClock,Sender_Dc_Id,My_Id,true);
 
             _ ->{[Head|Rest],My_VClock,HasChanged}   %labels from receiver are in order, if first is not deliverable, then we cant deliver all the rest
     end.
@@ -297,12 +297,12 @@ wait_for_response()->
         lager:info("*****TIMEOUT OCCURED AFTER SENDING A REMOTE LABEL TO A VNODE*********")
     end.
 
-process_unsatisfied_remote_labels(Remote_LabelDict,My_Vclock)->
+process_unsatisfied_remote_labels(Remote_LabelDict,My_Vclock,My_Id)->
     {Remote_LabelDict1,My_Vclock1,New_Scan_Needed1} = lists:foldl(fun(Key, {RLabels,MVector,NScan}) ->
     List= dict:fetch(Key, Remote_LabelDict),
       case List of
             []->{RLabels,MVector,NScan};
-            _ ->{Rest,Clock,HasChanged}=do_possible_delivers_to_vnodes(List,MVector,Key,false),
+            _ ->{Rest,Clock,HasChanged}=do_possible_delivers_to_vnodes(List,MVector,Key,My_Id,false),
                         case HasChanged of
                             true  -> {dict:store(Key,Rest,RLabels),Clock,true};
                                 _ -> {RLabels,MVector,NScan}
@@ -312,7 +312,7 @@ process_unsatisfied_remote_labels(Remote_LabelDict,My_Vclock)->
 
 %if a label is delivered from 1 dc, we need to scan whole other dc list again to see whether anything else is deliverable
        case New_Scan_Needed1 of
-              true-> process_unsatisfied_remote_labels(Remote_LabelDict1,My_Vclock1);
+              true-> process_unsatisfied_remote_labels(Remote_LabelDict1,My_Vclock1,My_Id);
               _   -> {Remote_LabelDict1,My_Vclock1}
        end.
 
