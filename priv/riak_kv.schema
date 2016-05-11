@@ -678,7 +678,7 @@ end
 
 {mapping, "ordering_service_total_dcs", "riak_kv.ordering_service_total_dcs", [
     {datatype, integer},
-    {default, 2}
+    {default, 3}
 ]}.
 
 {mapping, "ordering_service_my_dc_id", "riak_kv.ordering_service_my_dc_id", [

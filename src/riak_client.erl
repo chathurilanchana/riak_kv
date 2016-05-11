@@ -93,7 +93,7 @@ normal_get(Bucket, Key,MaxTS, Options, {?MODULE, [Node, _ClientId]}) ->
     end,
     %% TODO: Investigate adding a monitor here and eliminating the timeout.
     Timeout = recv_timeout(Options),
-    wait_for_reqid(ReqId, Timeout).
+    wait_for_get_reqid(ReqId, Timeout).
 
 consistent_get(Bucket, Key, Options, {?MODULE, [Node, _ClientId]}) ->
     BKey = {Bucket, Key},
@@ -822,6 +822,21 @@ wait_for_reqid(ReqId, Timeout) ->
         {ReqId, Response} -> Response
     after Timeout ->
             {error, timeout}
+    end.
+
+wait_for_get_reqid(ReqId, Timeout) ->
+    receive
+        {ReqId, {error, overload}=Response} ->
+            case app_helper:get_env(riak_kv, overload_backoff, undefined) of
+                Msecs when is_number(Msecs) ->
+                    timer:sleep(Msecs);
+                undefined ->
+                    ok
+            end,
+            Response;
+        {ReqId, Response,Vector} -> {Response,Vector}
+    after Timeout ->
+        {error, timeout}
     end.
 
 %% @private

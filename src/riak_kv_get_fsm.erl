@@ -325,8 +325,7 @@ preflist_for_tracing(Preflist) ->
      end || {Idx, Nd} <- lists:sublist(Preflist, 4)].
 
 %% @private
-waiting_vnode_r({r, VnodeResult, Idx, _ReqId}, StateData = #state{get_core = GetCore,
-                                                                  trace=Trace}) ->
+waiting_vnode_r({r, VnodeResult,Vector, Idx, _ReqId}, StateData = #state{get_core = GetCore, trace=Trace}) ->
     case Trace of
         true ->
             ShortCode = riak_kv_get_core:result_shortcode(VnodeResult),
@@ -339,7 +338,7 @@ waiting_vnode_r({r, VnodeResult, Idx, _ReqId}, StateData = #state{get_core = Get
     case riak_kv_get_core:enough(UpdGetCore) of
         true ->
             {Reply, UpdGetCore2} = riak_kv_get_core:response(UpdGetCore),
-            NewStateData = client_reply(Reply, StateData#state{get_core = UpdGetCore2}),
+            NewStateData = client_get_reply(Reply,Vector, StateData#state{get_core = UpdGetCore2}),
             update_stats(Reply, NewStateData),
             maybe_finalize(NewStateData);
         false ->
@@ -543,6 +542,41 @@ schedule_timeout(infinity) ->
     undefined;
 schedule_timeout(Timeout) ->
     erlang:send_after(Timeout, self(), request_timeout).
+
+client_get_reply(Reply,Vector, StateData = #state{from = {raw, ReqId, Pid},
+  options = Options,
+  timing = Timing,
+  trace = Trace}) ->
+  NewTiming = riak_kv_fsm_timing:add_timing(reply, Timing),
+  Msg = case get_option(details, Options, false) of
+          false ->
+            {ReqId, Reply,Vector};
+          [] ->
+            {ReqId, Reply,Vector};
+          Details ->
+            {OkError, ObjReason} = Reply,
+            Info = client_info(Details,
+              StateData#state{timing = NewTiming},
+              []),
+            {ReqId, {OkError, ObjReason, Info}}
+        end,
+  Pid ! Msg,
+
+  %% calculate timings here, since the trace macro needs total
+  %% response time. Stuff the result in state so we don't
+  %% need to calculate it again
+  {ResponseUSecs, Stages} =
+    riak_kv_fsm_timing:calc_timing(NewTiming),
+  case Trace of
+    true ->
+      ShortCode = riak_kv_get_core:result_shortcode(Reply),
+      ?DTRACE(?C_GET_FSM_CLIENT_REPLY,
+        [ShortCode, ResponseUSecs], ["client_reply"]);
+    _ ->
+      ok
+  end,
+  StateData#state{calculated_timings={ResponseUSecs, Stages},
+    timing = NewTiming}.
 
 client_reply(Reply, StateData = #state{from = {raw, ReqId, Pid},
                                        options = Options, 

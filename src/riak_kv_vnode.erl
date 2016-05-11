@@ -714,7 +714,7 @@ handle_command(?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,send
 
 handle_command(?KV_PUT_REQ{bkey=BKey,
                            object=Object,
-                           clock = Clock,
+                           clock = {Clock,CVector},
                            req_id=ReqId,
                            start_time=_StartTime,
                            options=Options},
@@ -722,16 +722,17 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
     StartTS = os:timestamp(),
     PhysicalTS=riak_kv_util:get_timestamp(),  %if not working change to current_monotonic_time()
     MaxTS0=max(Clock+1,max(PhysicalTS,MaxTS+1)), %retrieve the hybrid clock
+    Max_Dc_Vector=riak_kv_vclock:get_max_vector(CVector,DC_Vector) ,
 
     NewObj=riak_object:replace_value(Object,{riak_object:get_value(Object),term_to_binary(MaxTS0)}),
     Formatted_MaxTS=riak_kv_util:get_formatted_update_ts(MaxTS0),
     NewObj1=riak_object:update_last_modified(NewObj, Formatted_MaxTS),
 
-    riak_core_vnode:reply(Sender, {w, Idx, ReqId,MaxTS0}), %reply with hybrid clock at server
+    riak_core_vnode:reply(Sender, {w, Idx, ReqId,{MaxTS0,Max_Dc_Vector}}), %reply with hybrid clock at server
     {_Reply, UpdState} = do_put(Sender, BKey,  NewObj1, ReqId, MaxTS0, Options, State),
 
     %propagate labels to the ordering service
-     Label=riak_kv_causal_service_util:create_label(BKey,MaxTS0,DC_Vector),
+     Label=riak_kv_causal_service_util:create_label(BKey,MaxTS0,Max_Dc_Vector),
      riak_kv_ordering_service:add_label(Label,Causal_Service_Id,Idx),
 
     %should keep incrementing my own clock, if clients allowed to move
@@ -742,11 +743,11 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
         {ListPos, _} = random:uniform_s(length(List), os:timestamp()),
         RemoteReceiverName=lists:nth(ListPos, List),
         %lager:info("list member for dcid ~p is ~p ~n",[Key,RemoteReceiverName]),
-        riak_kv_data_propagator:propagate_data(BKey,Object,Options,My_Dc_Id,MaxTS0,RemoteReceiverName)
+        riak_kv_data_propagator:propagate_data(BKey,NewObj1,Options,My_Dc_Id,MaxTS0,RemoteReceiverName)
                 end, dict:fetch_keys(Receivers)),
 
     update_vnode_stats(vnode_put, Idx, StartTS),
-    {noreply, UpdState#state{max_ts = MaxTS0}};
+    {noreply, UpdState#state{max_ts = MaxTS0,dc_vector = Max_Dc_Vector}};
 
 handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId},Sender,State) ->
     do_get(Sender, BKey, ReqId, State);
@@ -1932,7 +1933,7 @@ put_merge(true, LWW, CurObj, UpdObj, VId, StartTime) ->
 
 %% @private
 do_get(_Sender, BKey, ReqID,
-       State=#state{idx=Idx, mod=Mod, modstate=ModState}) ->
+       State=#state{idx=Idx, mod=Mod, modstate=ModState,dc_vector = DC_Vector}) ->
     StartTS = os:timestamp(),
     {Retval, ModState1} = do_get_term(BKey, Mod, ModState),
     case Retval of
@@ -1942,7 +1943,7 @@ do_get(_Sender, BKey, ReqID,
             ok
     end,
     update_vnode_stats(vnode_get, Idx, StartTS),
-    {reply, {r, Retval, Idx, ReqID}, State#state{modstate=ModState1}}.
+    {reply, {r, Retval,DC_Vector, Idx, ReqID}, State#state{modstate=ModState1}}.
 
 %% @private
 -spec do_get_term({binary(), binary()}, atom(), tuple()) ->
