@@ -724,17 +724,17 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
     StartTS = os:timestamp(),
     PhysicalTS=riak_kv_util:get_timestamp(),  %if not working change to current_monotonic_time()
     MaxTS0=max(Clock+1,max(PhysicalTS,MaxTS+1)), %retrieve the hybrid clock
-    Max_Dc_Vector=riak_kv_vclock:get_max_vector(DC_Vector,CVector) ,
+    Max_Dc_Vector=riak_kv_vclock:get_max_vector(DC_Vector,CVector) , %if client clock is higher, update vnode clock
 
     NewObj=riak_object:replace_value(Object,{riak_object:get_value(Object),term_to_binary(MaxTS0)}),
     Formatted_MaxTS=riak_kv_util:get_formatted_update_ts(MaxTS0),
     NewObj1=riak_object:update_last_modified(NewObj, Formatted_MaxTS),
 
-    riak_core_vnode:reply(Sender, {w, Idx, ReqId,{MaxTS0,Max_Dc_Vector}}), %reply with hybrid clock at server
+    riak_core_vnode:reply(Sender, {w, Idx, ReqId,MaxTS0}), %reply with hybrid clock at server
     {_Reply, UpdState} = do_put(Sender, BKey,  NewObj1, ReqId, MaxTS0, Options, State),
 
     %propagate labels to the ordering service
-     Label=riak_kv_causal_service_util:create_label(BKey,MaxTS0,Max_Dc_Vector),
+     Label=riak_kv_causal_service_util:create_label(BKey,MaxTS0,CVector),
      riak_kv_ordering_service:add_label(Label,Causal_Service_Id,Idx),
 
     %should keep incrementing my own clock, if clients allowed to move
