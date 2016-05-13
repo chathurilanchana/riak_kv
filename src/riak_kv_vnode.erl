@@ -773,7 +773,7 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
     {noreply, UpdState#state{last_clock=PhysicalTS1,vv=VV1,vv_remote = VV_Remote1}};
 
 handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId,gst = GSTC},Sender,State=#state{gst=GST}) ->
-     GST1=riak_kv_vclock:get_max_vector(GSTC,GST),
+    GST1=max(GSTC,GST),
     %lager:info("gst received is ~p vnode gst is ~p max is ~p ~n",[GSTC,GST,GST1]),
     do_get(Sender, BKey, ReqId, State#state{gst=GST1});
 handle_command(#riak_kv_listkeys_req_v2{bucket=Input, req_id=ReqId, caller=Caller}, _Sender,
