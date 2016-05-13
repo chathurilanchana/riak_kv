@@ -691,6 +691,11 @@ end
     {default, 1}
 ]}.
 
+{mapping, "delay_print_interval", "riak_kv.delay_print_interval", [
+    {datatype, integer},
+    {default, 5}
+]}.
+
 {mapping, "myip", "riak_kv.myip", [
   {datatype, string},
    {default,"dev1@127.0.0.1,dev2@127.0.0.1"}

@@ -10,16 +10,14 @@
 -author("chathuri").
 
 %% API
--export([is_label_deliverable/3,get_max_vector/2]).
+-export([is_stable/2,get_max_vector/2]).
 
-is_label_deliverable(MyVclock,ReceivedVclock,SenderId)->
+%no need to check the sender's clock as deps from him always ordered
+is_stable(MyVclock,ReceivedVclock)->
   lists:all(fun(Key) ->
-    MyElem=dict:fetch(Key,MyVclock),
-    ReceivedElem=dict:fetch(Key,ReceivedVclock),
-    case Key of
-      SenderId->ReceivedElem=:=MyElem+1;  %no need to check this as that dc send them ordered; Just for safty
-      _          ->  ReceivedElem =< MyElem
-    end
+                  MyElem=dict:fetch(Key,MyVclock),
+                  ReceivedElem=dict:fetch(Key,ReceivedVclock),
+                  ReceivedElem =< MyElem
             end,dict:fetch_keys(ReceivedVclock)).
 
 get_max_vector(MyVclock,ReceivedVclock)->

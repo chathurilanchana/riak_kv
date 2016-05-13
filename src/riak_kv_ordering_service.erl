@@ -134,7 +134,7 @@ handle_cast({partition_heartbeat,Clock,Partition},State=#state{heartbeats = Hear
 handle_cast({remote_labels,Batch_To_Deliver,Sender_Dc_Id},State=#state{my_vector = My_VClock, unsatisfied_remote_labels = Remote_LabelDict})->
      %lager:info("received remote labels ~p from ~p ~n",[Batch_To_Deliver,Sender_Dc_Id]),
      [Head|_]=Batch_To_Deliver,  %the smallest one on the head
-     IsDeliverable=riak_kv_vclock:is_label_deliverable(My_VClock,Head#label.vector,Sender_Dc_Id),
+     IsDeliverable=riak_kv_vclock:remote_dependencies_satisfied(My_VClock,Head#label.vector,Sender_Dc_Id),
 
      %we only check this if head is deliverable from received batch
 {Remote_LabelDict2,My_Vclock2}=
@@ -258,7 +258,7 @@ do_possible_delivers_to_vnodes([],My_VClock,_Sender_Dc_Id,HasChanged)->
     {[],My_VClock,HasChanged};
 
 do_possible_delivers_to_vnodes([Head|Rest],My_VClock,Sender_Dc_Id,HasChanged)->
-    IsDeliverable=riak_kv_vclock:is_label_deliverable(My_VClock,Head#label.vector,Sender_Dc_Id),
+    IsDeliverable=riak_kv_vclock:remote_dependencies_satisfied(My_VClock,Head#label.vector,Sender_Dc_Id),
 
     case IsDeliverable of
         true->Max_VClock=riak_kv_vclock:get_max_vector(My_VClock,Head#label.vector),

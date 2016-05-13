@@ -142,13 +142,15 @@
                 vv_lst,
                 vv_remote,
                 last_clock,
-                gst,
-                pending_table_name,
+                gst_v,
+                pending_queues,
+                delay_print_interval::non_neg_integer(),
                 max_visibility_delay::non_neg_integer(),
                 sum_visibility_delay::non_neg_integer(),
                 sum_delayed_remote_writes::non_neg_integer(),
                 delay_distribution,
                 my_dc_id::non_neg_integer(),
+                total_dcs::non_neg_integer(),
                 mod :: module(),
                 async_put :: boolean(),
                 modstate :: term(),
@@ -537,27 +539,32 @@ init([Index]) ->
             Total_DC_Count=app_helper:get_env(riak_kv,ordering_service_total_dcs),
             HB_Vector=getInitVector(Total_DC_Count,dict:new()),
             Send_HB_Vector=getInitRemoteDCVector(My_DC_Id,Total_DC_Count,dict:new()),
+            GST_V=get_init_gst_vector(Total_DC_Count,dict:new()),
 
             {ok, Ring} = riak_core_ring_manager:get_my_ring(),
             GrossPrefLists = riak_core_ring:all_preflists(Ring, 1),
+
+            %now each partition keeps track of the vector, not just the minimum
             VV_LST= lists:foldl(fun(PrefList, Dict) ->
                               {Partition, _Node} = hd(PrefList),
-                              dict:store(Partition, 0, Dict)
+                              dict:store(Partition, HB_Vector, Dict)
                                 end, dict:new(), GrossPrefLists),
 
-            Pending_Table_Name=list_to_atom(integer_to_list(Index) ++ atom_to_list(gentle_rain_pops)),
-            ets:new(Pending_Table_Name, [ordered_set, named_table,private]),%to keep track of non_deliverable ups
+            Pending_Queues=get_initial_pending_queues(Total_DC_Count,My_DC_Id,Index,dict:new()),
+            Remote_Delay_Print_interval= app_helper:get_env(riak_kv,delay_print_interval),
 
             State = #state{idx=Index,
                             ordering_service_hb_freq = Ordering_Service_Hb_Freq,
                             gst_timer_frequency=GST_Timer_Frequency,
-                            pending_table_name = Pending_Table_Name,
+                            pending_queues =Pending_Queues,
                             my_dc_id = My_DC_Id,
+                            total_dcs = Total_DC_Count,
                             vv =HB_Vector,
                             vv_remote = Send_HB_Vector,
                             vv_lst = VV_LST,
-                            gst=0,
+                            gst_v = GST_V,
                             last_clock = 0,
+                            delay_print_interval = Remote_Delay_Print_interval,
                             max_visibility_delay = 0,
                             sum_visibility_delay = 0,
                             sum_delayed_remote_writes=0,
@@ -615,6 +622,24 @@ getInitRemoteDCVector(My_Id,Total_DC_Count,Dict)->
       getInitRemoteDCVector(My_Id,Total_DC_Count-1,Dict1)
   end.
 
+get_init_gst_vector(Total_DC_Count,Dict)->
+  case Total_DC_Count of
+    0->Dict;
+    _-> Dict1=dict:store(Total_DC_Count,0,Dict),
+        get_init_gst_vector(Total_DC_Count-1,Dict1)
+  end.
+
+get_initial_pending_queues(Total_DC_Count,My_DC_Id,Partition,Dict)->
+  case Total_DC_Count of
+    0->Dict;
+    My_DC_Id-> get_initial_pending_queues(Total_DC_Count-1,My_DC_Id,Partition,Dict);
+    _->
+      Name = list_to_atom(integer_to_list(Partition) ++ integer_to_list(Total_DC_Count) ++  atom_to_list(gentlerain_pops)),
+      Table = ets:new(Name, [set, named_table, private]),
+      Dict1=dict:store(Total_DC_Count, {0, 0, Table}, Dict),
+      get_initial_pending_queues(Total_DC_Count-1,My_DC_Id,Partition,Dict1)
+  end.
+
 handle_overload_command(?KV_PUT_REQ{}, Sender, Idx) ->
     riak_core_vnode:reply(Sender, {fail, Idx, overload});
 handle_overload_command(?KV_GET_REQ{req_id=ReqID}, Sender, Idx) ->
@@ -669,17 +694,16 @@ handle_command({heartbeat, Clock, Id}, _From, State=#state{vv=VV0}) ->
   VV1 = dict:store(Id, Clock, VV0),
   {noreply, State#state{vv=VV1}};
 
-handle_command({compute_gst},_From,State=#state{vv=VV, idx=Partition, vv_lst=VV_LST0,gst_timer_frequency = GST_Timer_Freq,pending_table_name =Pending_Table})->
-     My_Group_LST=lists:foldl(fun(Id, Min) ->
-                              min(dict:fetch(Id, VV), Min)
-                       end, infinity, dict:fetch_keys(VV)),
+handle_command({compute_gst},_From,State=#state{vv=VV, idx=Partition, vv_lst=VV_LST0,gst_timer_frequency = GST_Timer_Freq,
+  total_dcs = Total_Dcs,pending_queues = Pendings,my_dc_id = My_Id,last_clock = Last_Clock})->
+     Physical1=max(riak_kv_util:get_timestamp(),Last_Clock),
+     Max=max(dict:fetch(My_Id,VV),Physical1),
+     VV1=dict:store(My_Id,Max,VV),
+     VV_LST1=dict:store(Partition,VV1,VV_LST0),
+     %global min vector,1 entry per dc
+     GST=current_gst(VV_LST1,Total_Dcs),
 
-     VV_LST1=dict:store(Partition,My_Group_LST,VV_LST0),%min in this replica group
-
-     %global min accross all the partitions
-     GST=current_gst(VV_LST1),
-
-     State1 = apply_possible_pending_operations(GST,State,Partition,Pending_Table),
+     {Pendings1,State1}=flush_pending_operations(Pendings,GST,State,Partition),
      {ok, Ring} = riak_core_ring_manager:get_my_ring(),
      GrossPrefLists = riak_core_ring:all_preflists(Ring, 1),
      lists:foreach(fun(PrefList) ->
@@ -687,19 +711,20 @@ handle_command({compute_gst},_From,State=#state{vv=VV, idx=Partition, vv_lst=VV_
            {Partition, _Node} ->
                noop;
            {_OtherPartition, _Node} ->
-               riak_kv_vnode:new_lst(hd(PrefList), Partition, My_Group_LST)
+               riak_kv_vnode:new_lst(hd(PrefList), Partition, VV1)
         end
                 end, GrossPrefLists),
      riak_core_vnode:send_command_after(GST_Timer_Freq, {compute_gst}),
-     {noreply, State1#state{vv_lst=VV_LST1, gst=GST}};
+     {noreply, State1#state{vv_lst=VV_LST1, gst_v =GST,pending_queues = Pendings1,vv=VV1}};
 
-handle_command({new_lst, Partition, Clock}, _From, State=#state{vv_lst=VV_LST0,pending_table_name = Pending_Table}) ->
-  VV_LST1 = dict:store(Partition, Clock, VV_LST0),
-  GST = current_gst(VV_LST1),
-  State1 = apply_possible_pending_operations(GST,State,Partition,Pending_Table),
-  {noreply, State1#state{vv_lst=VV_LST1, gst=GST}};
+handle_command({new_lst, Partition, Vector}, _From, State=#state{vv_lst=VV_LST0,pending_queues = Pendings,idx = Idx,total_dcs = Total_Dc_Count}) ->
+  VV_LST1 = dict:store(Partition, Vector, VV_LST0),
+  GST = current_gst(VV_LST1,Total_Dc_Count),
+  {Pendings1,State1}=flush_pending_operations(Pendings,GST,State,Idx),
+  {noreply, State1#state{vv_lst=VV_LST1,pending_queues = Pendings1}};
 
-handle_command({vnode_remote_delay_stats},_From,State=#state{max_visibility_delay = Max_Delay,sum_delayed_remote_writes = Count,sum_visibility_delay = Sum_Delay,delay_distribution = Dict})->
+handle_command({vnode_remote_delay_stats},_From,State=#state{max_visibility_delay = Max_Delay,sum_delayed_remote_writes = Count,sum_visibility_delay = Sum_Delay,
+  delay_distribution = Dict,delay_print_interval = Delay_Print_Interval})->
         Avg     =     case Count>0 of
                      true->Sum_Delay/Count;
                         _ ->0
@@ -707,75 +732,90 @@ handle_command({vnode_remote_delay_stats},_From,State=#state{max_visibility_dela
         lager:info("===============avg delay is ~p max delay is ~p total remote writes ~p ==",[Avg,Max_Delay,Count]),
         lists:foreach(fun(Id) ->
                 Delay_Count=  dict:fetch(Id,Dict),
-                lager:info("key is ~p ms count is ~p ~n",[Id*5,Delay_Count])
+                lager:info("key is ~p ms count is ~p ~n",[Id*Delay_Print_Interval,Delay_Count])
                            end, dict:fetch_keys(Dict)),
         {noreply,State};
 
-handle_command(?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,sender_dc_id = Sender_DcId,timestamp = Timestamp}, _Sender, State=#state{vv=VV0,gst=GST,idx=Idx,pending_table_name = Pending_Table})->
-  VV1=dict:store(Sender_DcId,Timestamp,VV0),
-  State1= case GST>=Timestamp of
-               true->%lager:info("remote update applied ~n"),
-                     {_Reply, UpdState} =   do_remote_put(BKey, Object, Timestamp, Options, State),
-                     update_vnode_stats(vnode_put, Idx, os:timestamp()),
-                     UpdState;
-               false->%lager:info("remote update added to pending list"),
-                      Current_Time=riak_kv_util:get_timestamp(),
-                      ets:insert(Pending_Table, {{Timestamp, BKey,Object,Options,Current_Time}, in}),
-                      State
-           end,
+handle_command(?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,sender_dc_id = Sender_DcId,timestamp = GST_Received}, _Sender, State=#state{vv=VV0,gst_v =GST_V,idx=Idx,pending_queues = Pendings})->
+  Sender_Timestamp=dict:fetch(Sender_DcId,GST_Received),
+  VV1=dict:store(Sender_DcId,Sender_Timestamp,VV0),
+
+  Is_Stable=riak_kv_vclock:is_stable(GST_V,GST_Received),
+  State1= case Is_Stable of
+             true->
+                  {_Reply, UpdState} =   do_remote_put(BKey, Object, Sender_Timestamp, Options, State),
+                  update_vnode_stats(vnode_put, Idx, os:timestamp()),
+                  UpdState;
+             _ ->
+                  {Head, Tail, PendingOps} = dict:fetch(Sender_DcId, Pendings),
+                  ets:insert(PendingOps, {Tail, {GST_Received, Sender_DcId, BKey, Object, Options,riak_kv_util:get_timestamp()}}),
+                  Pendings1 = dict:store(Sender_DcId, {Head, Tail+1, PendingOps}, Pendings),
+                  State#state{pending_queues = Pendings1}
+  end,
 
   {reply,ok,State1#state{vv=VV1}}; %Change UpdState to State if not work
 
 handle_command(?KV_PUT_REQ{bkey=BKey,
                            object=Object,
-                           clock = Clock,
+                           clock = Client_GST,
                            req_id=ReqId,
                            start_time=_StartTime,
                            options=Options},
-               Sender, State=#state{idx=Idx,receivers = Receivers,my_dc_id = My_Dc_Id,last_clock = Last_Clock,vv = VV0,vv_remote = VV_Remote}) ->
+               Sender, State=#state{idx=Idx,receivers = Receivers,my_dc_id = My_Dc_Id,gst_v = VNode_GST,last_clock = Last_Clock,
+      vv = VV0,vv_remote = VV_Remote,pending_queues = Pendings}) ->
    StartTS = os:timestamp(),
+
+   Client_Local=dict:fetch(My_Dc_Id,Client_GST),
    PhysicalTS=riak_kv_util:get_timestamp(),
    PhysicalTS1=max(PhysicalTS,Last_Clock+1), %make ts logical+physical
 
-   Diff=Clock-PhysicalTS1,
+   Diff=Client_Local-PhysicalTS1,
 
    % if diff>0 we wait, else we can apply. If ==0, we increment clock by1
    NewClock = case Diff==0 of
-                 true->Clock+1;
+                 true-> Client_Local+1;
                  false->case Diff>0 of
-                          true->timer:sleep(trunc(Diff/1000)),
-                                Clock + 1;
+                          true->
+                            timer:sleep(trunc(Diff/1000)),
+                            Client_Local + 1;
                           false->PhysicalTS1
                         end
               end,
 
+
    VV1 = dict:store(My_Dc_Id, NewClock, VV0),
+   GST_New=riak_kv_vclock:get_max_vector(Client_GST,VNode_GST),
+   {Pendings1,State1}=flush_pending_operations(Pendings,GST_New,State,Idx),%flush anything below GSTNEW
+
+   Updated_Client_Clock=dict:store(My_Dc_Id,NewClock,Client_GST),
+
 
   %append maxts so clients can update theirs with get operations
-   NewObj=riak_object:replace_value(Object,{riak_object:get_value(Object),term_to_binary(NewClock)}),
+   NewObj=riak_object:replace_value(Object,{riak_object:get_value(Object),term_to_binary(Updated_Client_Clock)}),
 
    Formatted_MaxTS=riak_kv_util:get_formatted_update_ts(NewClock),
    NewObj1=riak_object:update_last_modified(NewObj, Formatted_MaxTS), %selection based on last modified, so this is a must
 
-   riak_core_vnode:reply(Sender, {w, Idx, ReqId,NewClock}), %reply with hybri1d clock at server},
-   {_Reply, UpdState} = do_put(Sender, BKey,  NewObj1, ReqId,NewClock , Options, State),
+   riak_core_vnode:reply(Sender, {w, Idx, ReqId,Updated_Client_Clock}), %reply with hybri1d clock at server},
+   {_Reply, UpdState} = do_put(Sender, BKey,  NewObj1, ReqId,NewClock , Options, State1),
 
     %propagate data to one per each receiver other than me
    VV_Remote1= lists:foldl(fun(Id,Acc) ->
                   List= dict:fetch(Id, Receivers),
                   {ListPos, _} = random:uniform_s(length(List), os:timestamp()),
                   RemoteReceiverName=lists:nth(ListPos, List),
-                  riak_kv_data_propagator:propagate_data(BKey,NewObj1,Options,My_Dc_Id,NewClock,RemoteReceiverName),
+                  riak_kv_data_propagator:propagate_data(BKey,NewObj1,Options,My_Dc_Id,Updated_Client_Clock,RemoteReceiverName),
                   dict:store(Id,NewClock,Acc)
                 end, VV_Remote ,dict:fetch_keys(Receivers)),
 
     update_vnode_stats(vnode_put, Idx, StartTS),
-    {noreply, UpdState#state{last_clock=PhysicalTS1,vv=VV1,vv_remote = VV_Remote1}};
+    {noreply, UpdState#state{last_clock=PhysicalTS1,vv=VV1,vv_remote = VV_Remote1,pending_queues = Pendings1}};
 
-handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId,gst = GSTC},Sender,State=#state{gst=GST}) ->
-    GST1=max(GSTC,GST),
-    lager:info("gst received is ~p vnode gst is ~p max is ~p ~n",[GSTC,GST,GST1]),
-    do_get(Sender, BKey, ReqId, State#state{gst=GST1});
+handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId,gst = GSTC},Sender,State=#state{gst_v =GST,pending_queues = Pendings,idx=Partition}) ->
+    GST_New=riak_kv_vclock:get_max_vector(GSTC,GST),
+    {Pendings1,State1}=flush_pending_operations(Pendings,GST_New,State,Partition),
+    do_get(Sender, BKey, ReqId, State1#state{pending_queues = Pendings1});
+
 handle_command(#riak_kv_listkeys_req_v2{bucket=Input, req_id=ReqId, caller=Caller}, _Sender,
                State=#state{async_folding=AsyncFolding,
                             key_buf_size=BufferSize,
@@ -1584,44 +1624,73 @@ raw_put({Idx, Node}, Key, Obj) ->
 %% @private
 %% upon receipt of a client-initiated put
 
-current_gst(VV_LST)->
-  lists:foldl(fun(Entry, Min) ->
-    min(Min, dict:fetch(Entry, VV_LST))
-              end, infinity, dict:fetch_keys(VV_LST)).
+current_gst(VV_LST,Total_Dc_Count)->
+  GST0=init_max_gst(Total_Dc_Count,dict:new()),
+  lists:foldl(fun(Partition, Acc0) ->
+             LST= dict:fetch(Partition, VV_LST),
+             lists:foldl(fun(Dc_Id, Acc1) ->
+                         dict:store(Dc_Id, min(dict:fetch(Dc_Id, Acc1), dict:fetch(Dc_Id, LST)), Acc1)
+                        end, Acc0, dict:fetch_keys(LST))
+              end, GST0, dict:fetch_keys(VV_LST)).
 
-apply_possible_pending_operations(GST,State,Idx,Pending_Table_Name)->
-  case ets:first(Pending_Table_Name) of
-    '$end_of_table' ->
-      State;
-    {Timestamp, BKey,Object,Options,Receive_Time}=Key when Timestamp =< GST ->
-      State1=apply_remote_update(Timestamp,BKey,Object,Options,State,Idx),
-      %lager:info("********remote pending update applied****** ~n"),
-      true = ets:delete(Pending_Table_Name, Key),
-      Sum_Delay=State#state.sum_visibility_delay,Max_Delay=State#state.max_visibility_delay,Count=State#state.sum_delayed_remote_writes,
-      Dict=State#state.delay_distribution,
-      Current_Time=riak_kv_util:get_timestamp(),
-      Delay=Current_Time-Receive_Time, %we only consider the waiting time at vnode
-      {Sum_Delay1,Max_Delay1,Count1,Dict1} = case Delay>0 of
-                                              true->   Rem=Delay div 5000,%convert delay to ms,and 5 range
-                                                       Rem1=case Rem >100 of %accumulate under 500ms if delay >500ms
-                                                              true->100;
-                                                              _   ->Rem
-                                                            end,
-
-                                                       DictNew=case dict:find(Rem1,Dict) of
-                                                                    {ok,Value}->dict:store(Rem1,Value+1,Dict);
-                                                                      error->dict:store(Rem1,1,Dict)
-                                                               end,
-                                                       Max_DelayNew=max(Delay,Max_Delay),
-                                                       {Sum_Delay+Delay,Max_DelayNew,Count+1,DictNew};
-                                              false->{Sum_Delay,Max_Delay,Count,Dict}
-                                            end,
-      State2=State1#state{sum_visibility_delay = Sum_Delay1,max_visibility_delay = Max_Delay1,
-        sum_delayed_remote_writes = Count1,delay_distribution = Dict1},
-      apply_possible_pending_operations(GST,State2,Idx,Pending_Table_Name);
-    _Key ->
-      State
+init_max_gst(Total_Dc_Count,Dict)->
+  case Total_Dc_Count of
+    0 ->Dict;
+    _ ->
+      Dict1=dict:store(Total_Dc_Count,infinity,Dict),
+      init_max_gst(Total_Dc_Count-1,Dict1)
   end.
+
+
+flush_pending_operations(Pendings,GST,State,Idx)->
+  lists:foldl(fun({Dc_Id,Queue}, {Pendings1,State1}) ->
+    {Head,Tail,Table}=Queue,
+    {NewHead, NewTail, Table,State2}=execute_possible_operations(Head,Tail,Table,GST,State1,Idx),
+    {dict:store(Dc_Id,{NewHead,NewTail,Table},Pendings1),State2}
+              end, {dict:new(),State},  dict:to_list(Pendings)).
+
+%head=tail; everything has been deleted, start from 0
+execute_possible_operations(Head,Head,Table,_GST,State,_Idx)->
+  {0,0,Table,State};
+
+execute_possible_operations(Head,Tail,Table,GST,State,Idx)->
+  case ets:lookup(Table, Head) of
+    [{Head, {GST_Received, Sender_DcId, BKey, Object, Options,Received_Time}}] ->
+      case riak_kv_vclock:is_stable(GST,GST_Received)of
+        true->
+          Timestamp=dict:fetch(Sender_DcId,GST_Received),
+          State1=apply_remote_update(Timestamp,BKey,Object,Options,State,Idx),
+          true = ets:delete(Table, Head),
+          %%%%%%%Gathering Delay stats for remote updates %%%%%%%%%%%%%%%%%%%%%%%%%
+
+          Sum_Delay=State#state.sum_visibility_delay,Max_Delay=State#state.max_visibility_delay,Count=State#state.sum_delayed_remote_writes,
+          Dict=State#state.delay_distribution,
+          Delay_Print_Interval=State#state.delay_print_interval,
+          Current_Time=riak_kv_util:get_timestamp(),
+          Delay=Current_Time-Received_Time, %we only consider the waiting time at vnode
+          {Sum_Delay1,Max_Delay1,Count1,Dict1} = case Delay>0 of
+                                                   true->   Rem=Delay div (Delay_Print_Interval*1000),%convert delay to ms,and 5 range
+                                                     Rem1=case Rem >100 of %accumulate under 500ms if delay >500ms
+                                                            true->100;
+                                                            _   ->Rem
+                                                          end,
+
+                                                     DictNew=case dict:find(Rem1,Dict) of
+                                                               {ok,Value}->dict:store(Rem1,Value+1,Dict);
+                                                               error->dict:store(Rem1,1,Dict)
+                                                             end,
+                                                     Max_DelayNew=max(Delay,Max_Delay),
+                                                     {Sum_Delay+Delay,Max_DelayNew,Count+1,DictNew};
+                                                   false->{Sum_Delay,Max_Delay,Count,Dict}
+                                                 end,
+          State2=State1#state{sum_visibility_delay = Sum_Delay1,max_visibility_delay = Max_Delay1,
+            sum_delayed_remote_writes = Count1,delay_distribution = Dict1},
+          %%%%%%%%%%%%%%%%%%%%%%%%End of gathering stats for remote updates %%%%%%%%%%%%%
+          execute_possible_operations(Head+1,Tail,Table,GST,State2,Idx);
+          _ ->{Head,Tail,Table,State}
+      end;
+        _ ->{Head,Tail,Table,State}
+end.
 
 apply_remote_update(Timestamp,BKey,Object,Options,State,Idx)->
   {_Reply, UpdState} =   do_remote_put(BKey, Object, Timestamp, Options, State),
@@ -2003,7 +2072,7 @@ put_merge(true, LWW, CurObj, UpdObj, VId, StartTime) ->
 
 %% @private
 do_get(_Sender, BKey, ReqID,
-       State=#state{idx=Idx, mod=Mod, modstate=ModState,gst = GST}) ->
+       State=#state{idx=Idx, mod=Mod, modstate=ModState}) ->
     StartTS = os:timestamp(),
     {Retval, ModState1} = do_get_term(BKey, Mod, ModState),
     case Retval of
@@ -2013,7 +2082,7 @@ do_get(_Sender, BKey, ReqID,
             ok
     end,
     update_vnode_stats(vnode_get, Idx, StartTS),
-    {reply, {r, Retval, Idx, ReqID,GST}, State#state{modstate=ModState1}}.
+    {reply, {r, Retval, Idx, ReqID,gt}, State#state{modstate=ModState1}}.
 
 %% @private
 -spec do_get_term({binary(), binary()}, atom(), tuple()) ->
