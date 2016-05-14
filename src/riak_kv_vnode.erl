@@ -784,7 +784,6 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
 
 
    VV1 = dict:store(My_Dc_Id, NewClock, VV0),
-   GST_New=riak_kv_vclock:get_max_vector(Client_GST,VNode_GST),
 
    Updated_Client_Clock=dict:store(My_Dc_Id,NewClock,Client_GST),
 
@@ -812,7 +811,7 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
 
 handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId,gst = GSTC},Sender,State=#state{gst_v =GST,idx=Partition}) ->
     GST_New=riak_kv_vclock:get_max_vector(GSTC,GST),
-    do_get(Sender, BKey, ReqId, State);
+    do_get(Sender, BKey, ReqId, State#state{gst_v =GST_New});
 
 handle_command(#riak_kv_listkeys_req_v2{bucket=Input, req_id=ReqId, caller=Caller}, _Sender,
                State=#state{async_folding=AsyncFolding,
