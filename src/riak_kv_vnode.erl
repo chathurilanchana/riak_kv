@@ -796,7 +796,7 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
    Formatted_MaxTS=riak_kv_util:get_formatted_update_ts(NewClock),
    NewObj1=riak_object:update_last_modified(NewObj, Formatted_MaxTS), %selection based on last modified, so this is a must
 
-   riak_core_vnode:reply(Sender, {w, Idx, ReqId,Updated_Client_Clock}), %reply with hybri1d clock at server},
+   riak_core_vnode:reply(Sender, {w, Idx, ReqId,NewClock}), %reply with hybri1d clock at server},
    {_Reply, UpdState} = do_put(Sender, BKey,  NewObj1, ReqId,NewClock , Options, State1),
 
     %propagate data to one per each receiver other than me
