@@ -762,7 +762,7 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
                            start_time=_StartTime,
                            options=Options},
                Sender, State=#state{idx=Idx,receivers = Receivers,my_dc_id = My_Dc_Id,gst_v = VNode_GST,last_clock = Last_Clock,
-      vv = VV0,vv_remote = VV_Remote,pending_queues = Pendings}) ->
+      vv = VV0,vv_remote = VV_Remote}) ->
    StartTS = os:timestamp(),
 
    Client_Local=dict:fetch(My_Dc_Id,Client_GST),
@@ -785,7 +785,6 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
 
    VV1 = dict:store(My_Dc_Id, NewClock, VV0),
    GST_New=riak_kv_vclock:get_max_vector(Client_GST,VNode_GST),
-   {Pendings1,State1}=flush_pending_operations(Pendings,GST_New,State,Idx),%flush anything below GSTNEW
 
    Updated_Client_Clock=dict:store(My_Dc_Id,NewClock,Client_GST),
 
@@ -797,7 +796,7 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
    NewObj1=riak_object:update_last_modified(NewObj, Formatted_MaxTS), %selection based on last modified, so this is a must
 
    riak_core_vnode:reply(Sender, {w, Idx, ReqId,Updated_Client_Clock}), %reply with hybri1d clock at server},
-   {_Reply, UpdState} = do_put(Sender, BKey,  NewObj1, ReqId,NewClock , Options, State1),
+   {_Reply, UpdState} = do_put(Sender, BKey,  NewObj1, ReqId,NewClock , Options, State),
 
     %propagate data to one per each receiver other than me
    VV_Remote1= lists:foldl(fun(Id,Acc) ->
@@ -809,12 +808,11 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
                 end, VV_Remote ,dict:fetch_keys(Receivers)),
 
     update_vnode_stats(vnode_put, Idx, StartTS),
-    {noreply, UpdState#state{last_clock=PhysicalTS1,vv=VV1,vv_remote = VV_Remote1,pending_queues = Pendings1}};
+    {noreply, UpdState#state{last_clock=PhysicalTS1,vv=VV1,vv_remote = VV_Remote1}};
 
-handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId,gst = GSTC},Sender,State=#state{gst_v =GST,pending_queues = Pendings,idx=Partition}) ->
+handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId,gst = GSTC},Sender,State=#state{gst_v =GST,idx=Partition}) ->
     GST_New=riak_kv_vclock:get_max_vector(GSTC,GST),
-    {Pendings1,State1}=flush_pending_operations(Pendings,GST_New,State,Partition),
-    do_get(Sender, BKey, ReqId, State1#state{pending_queues = Pendings1});
+    do_get(Sender, BKey, ReqId, State);
 
 handle_command(#riak_kv_listkeys_req_v2{bucket=Input, req_id=ReqId, caller=Caller}, _Sender,
                State=#state{async_folding=AsyncFolding,
