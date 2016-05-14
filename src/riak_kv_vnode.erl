@@ -761,7 +761,7 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
                            req_id=ReqId,
                            start_time=_StartTime,
                            options=Options},
-               Sender, State=#state{idx=Idx,receivers = Receivers,my_dc_id = My_Dc_Id,gst_v = VNode_GST,last_clock = Last_Clock,
+               Sender, State=#state{idx=Idx,receivers = Receivers,my_dc_id = My_Dc_Id,last_clock = Last_Clock,
       vv = VV0,vv_remote = VV_Remote}) ->
    StartTS = os:timestamp(),
 
@@ -809,7 +809,7 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
     update_vnode_stats(vnode_put, Idx, StartTS),
     {noreply, UpdState#state{last_clock=PhysicalTS1,vv=VV1,vv_remote = VV_Remote1}};
 
-handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId,gst = GSTC},Sender,State=#state{gst_v =GST,idx=Partition}) ->
+handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId,gst = GSTC},Sender,State=#state{gst_v =GST}) ->
     GST_New=riak_kv_vclock:get_max_vector(GSTC,GST),
     do_get(Sender, BKey, ReqId, State#state{gst_v =GST_New});
 
