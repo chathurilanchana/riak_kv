@@ -133,23 +133,12 @@
           leasing = false :: boolean()
          }).
 
--record(remote_received_data,{
-    object,
-    options,
-    received_time
-}).
-
 -record(state, {idx :: partition(),
                 max_ts::non_neg_integer(),
                 causal_service_reg_name::atom(),
                 ordering_service_hb_freq::non_neg_integer(),
                 receivers,
                 dc_vector,
-                delay_distribution,
-                max_visibility_delay::non_neg_integer(),
-                sum_visibility_delay::non_neg_integer(),
-                sum_delayed_remote_writes::non_neg_integer(),
-                label_data_storage,
                 my_dc_id::non_neg_integer(),
                 mod :: module(),
                 async_put :: boolean(),
@@ -538,11 +527,6 @@ init([Index]) ->
                            ordering_service_hb_freq = Ordering_Service_Hb_Freq,
                            my_dc_id = My_DC_Id,
                            dc_vector =DC_Vector,
-                            delay_distribution = dict:new(),
-                            max_visibility_delay = 0,
-                            sum_visibility_delay = 0,
-                            sum_delayed_remote_writes=0,
-                           label_data_storage = dict:new(),
                            async_folding=AsyncFolding,
                            mod=Mod,
                            async_put = DoAsyncPut,
@@ -619,112 +603,24 @@ handle_command({set_receivers, Receivers}, _From, S0) ->
   lager:info("VNODE RECEIVED RECEIVERS ~p ~n",[Receivers]),
   {reply, ok, S0#state{receivers=Receivers}};
 
-handle_command({heartbeat},_From,State=#state{max_ts = MaxTS, idx = Partition,
-    causal_service_reg_name =Causal_Service_Id,ordering_service_hb_freq = Hb_Frequency })->
-    Physical_Time=riak_kv_util:get_timestamp(),  %later change to current_monotonic_time()
-    Clock=max(Physical_Time,MaxTS),
-    if
-        MaxTS>Clock-Hb_Frequency ->
-            %lager:info("not sending heartbeat by ~p this time coz clock is ~p ~n",[Partition,Clock]),
-            riak_core_vnode:send_command_after(MaxTS+Hb_Frequency-Clock, {heartbeat}) ;  %has not sent a label since last heartbeat
-        true ->
-            %lager:info("sending heartbeat by ~p and clock is ~p ~n",[Partition,Clock]),
-            riak_kv_ordering_service:partition_heartbeat(Partition,Clock,Causal_Service_Id),
-            riak_core_vnode:send_command_after(Hb_Frequency, {heartbeat})
-    end,
 
-    {noreply,State#state{max_ts = Clock}};
-
-handle_command({vnode_remote_delay_stats},_From,State=#state{max_visibility_delay = Max_Delay,sum_delayed_remote_writes = Count,sum_visibility_delay = Sum_Delay,delay_distribution = Dict})->
-        Avg     =     case Count>0 of
-                     true->Sum_Delay/Count;
-                        _ ->0
-                  end,
-        lager:info("===============avg delay is ~p max delay is ~p total remote writes ~p ==",[Avg,Max_Delay,Count]),
-        lists:foreach(fun(Id) ->
-                 Delay_Count=  dict:fetch(Id,Dict),
-                 lager:info("key is ~p ms count is ~p ~n",[Id*5,Delay_Count])
-                end, dict:fetch_keys(Dict)),
-         {noreply,State};
-
-%when receives a label, check whether data is available, if so apply it and update the vector, otherwise wait for data
-handle_command({stable_label,Label,Sender_Dc_Id,Sender},_From,State=#state{label_data_storage = Label_Data_storage,idx = Idx,sum_visibility_delay =Sum_Delay,max_visibility_delay = Max_Delay,
-  delay_distribution = Dict,sum_delayed_remote_writes = Count,dc_vector = Remote_VV})->
-  %lager:info("A deliverable label is received from ~p label is ~p",[Sender_Dc_Id,Label]),
-  {_Bucket,Key}=Label#label.bkey,
-  <<Integer_Key:32/big>>=Key,
-  Label_Data_Key={Sender_Dc_Id,Integer_Key,Label#label.timestamp},
-  {Label_Data_storage1,State1}= case dict:find(Label_Data_Key,Label_Data_storage) of
-                                    {ok,Data}-> StartTime = riak_core_util:moment(),
-                                        Object=Data#remote_received_data.object,
-                                        Options=Data#remote_received_data.options,
-                                        Data_Receive_Time=Data#remote_received_data.received_time,
-                                        {_Reply, UpdState} = do_remote_put(Label#label.bkey,  Object, StartTime, Options, State),
-                                        %lager:info("Remote update from ~p applied at vnode",[Sender_Dc_Id]),
-                                        Sender!ok,
-
-                                        %just to masure the visibility delay, comment after testing
-                                        Delay=riak_kv_util:get_timestamp()-Data_Receive_Time,
-                                        {Sum_Delay1,Max_Delay1,Dict1,Count1}=case Delay>0 of
-                                                                      true->
-                                                                            NewMaxDelay=max(Delay,Max_Delay),
-                                                                            Rem=Delay div 5000,%convert delay to ms,and 20 range
-
-                                                                            Rem1=case Rem>100 of
-                                                                                   true->100;
-                                                                                   _   ->Rem
-                                                                                 end,
-
-                                                                            DictNew=case dict:find(Rem1,Dict) of
-                                                                                  {ok,Value}->dict:store(Rem1,Value+1,Dict);
-                                                                                  error->dict:store(Rem1,1,Dict)
-                                                                                end,
-                                                                            {Delay+Sum_Delay,NewMaxDelay,DictNew,Count+1};
-                                                                       _   ->{Sum_Delay,Max_Delay,Dict,Count}
-                                                                   end,
-
-                                         Max_Remote_VV=riak_kv_vclock:get_max_vector(Label#label.vector,Remote_VV),
-                                         update_vnode_stats(vnode_put, Idx, os:timestamp()),%data has been received
-                                        {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector = Max_Remote_VV,sum_visibility_delay = Sum_Delay1,max_visibility_delay = Max_Delay1,delay_distribution = Dict1,sum_delayed_remote_writes = Count1}};
-
-                                      _  ->%lager:info("cant apply label at vnode, data not received"),
-                                         {dict:store(Label_Data_Key,{Sender,Label#label.vector},Label_Data_storage),State}
-                                end,
-
-  {noreply,State1#state{label_data_storage =Label_Data_storage1 }};
-
-handle_command(?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,sender_dc_id = Sender_DcId,timestamp = Timestamp}, _Sender, State=#state{idx=Idx,label_data_storage = Label_Data_storage,dc_vector = Remote_VV})->
+handle_command(?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,sender_dc_id = Sender_DcId,timestamp = _Timestamp}, _Sender, State=#state{idx=Idx})->
   %lager:info("vnode received remote data"),
-  {_Bucket,Key}=BKey,
-  <<Integer_Key:32/big>>=Key,
-  Label_Data_Key={Sender_DcId,Integer_Key,Timestamp},
-  {Label_Data_storage1,State1}= case dict:find(Label_Data_Key,Label_Data_storage) of
-                                   {ok,{Sender,Vector}}->
-                                        StartTime = riak_core_util:moment(),
-                                       {_Reply, UpdState} = do_remote_put(BKey,  Object, StartTime, Options, State),
-                                       %lager:info("Remote update from ~p applied at vnode",[Sender_DcId]),
-                                       update_vnode_stats(vnode_put, Idx, os:timestamp()),
-                                       Sender!ok,
-                                       Max_Remote_VV=riak_kv_vclock:get_max_vector(Vector,Remote_VV),
-                                       {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector =Max_Remote_VV}};
-
-                                   _  -> %lager:info("cant apply data at vnode, waiting for label"),
-                                        Received_Object=#remote_received_data{object = Object,options = Options,received_time = riak_kv_util:get_timestamp()},
-                                        {dict:store(Label_Data_Key,Received_Object,Label_Data_storage),State}
-                                 end,
-  {reply,ok,State1#state{label_data_storage = Label_Data_storage1}}; %Change UpdState to State if not work
+  StartTime = riak_core_util:moment(),
+  {_Reply, UpdState} = do_remote_put(BKey,  Object, StartTime, Options, State),
+  update_vnode_stats(vnode_put, Idx, os:timestamp()),
+  {reply,ok,UpdState}; %Change UpdState to State if not work
 
 handle_command(?KV_PUT_REQ{bkey=BKey,
                            object=Object,
-                           clock = {Clock,CVector},
+                           clock = Clock,
                            req_id=ReqId,
                            start_time=_StartTime,
                            options=Options},
-               Sender, State=#state{idx=Idx,max_ts = MaxTS,causal_service_reg_name = Causal_Service_Id,receivers = Receivers,my_dc_id = My_Dc_Id,dc_vector = DC_Vector}) ->
+               Sender, State=#state{idx=Idx,max_ts = MaxTS,receivers = Receivers,my_dc_id = My_Dc_Id}) ->
     StartTS = os:timestamp(),
     PhysicalTS=riak_kv_util:get_timestamp(),  %if not working change to current_monotonic_time()
     MaxTS0=max(Clock+1,max(PhysicalTS,MaxTS+1)), %retrieve the hybrid clock
-    Max_Dc_Vector=riak_kv_vclock:get_max_vector(DC_Vector,CVector) , %if client clock is higher, update vnode clock
 
     NewObj=riak_object:replace_value(Object,{riak_object:get_value(Object),term_to_binary(MaxTS0)}),
     Formatted_MaxTS=riak_kv_util:get_formatted_update_ts(MaxTS0),
@@ -732,12 +628,6 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
 
     riak_core_vnode:reply(Sender, {w, Idx, ReqId,MaxTS0}), %reply with hybrid clock at server
     {_Reply, UpdState} = do_put(Sender, BKey,  NewObj1, ReqId, MaxTS0, Options, State),
-
-    %propagate labels to the ordering service
-     Label=riak_kv_causal_service_util:create_label(BKey,MaxTS0,CVector),
-     riak_kv_ordering_service:add_label(Label,Causal_Service_Id,Idx),
-
-    %should keep incrementing my own clock, if clients allowed to move
 
     %propagate data to one per each receiver other than me
     lists:foreach(fun(Key) ->
@@ -749,7 +639,7 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
                 end, dict:fetch_keys(Receivers)),
 
     update_vnode_stats(vnode_put, Idx, StartTS),
-    {noreply, UpdState#state{max_ts = MaxTS0,dc_vector = Max_Dc_Vector}};
+    {noreply, UpdState#state{max_ts = MaxTS0}};
 
 handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId},Sender,State) ->
     do_get(Sender, BKey, ReqId, State);
@@ -1935,7 +1825,7 @@ put_merge(true, LWW, CurObj, UpdObj, VId, StartTime) ->
 
 %% @private
 do_get(_Sender, BKey, ReqID,
-       State=#state{idx=Idx, mod=Mod, modstate=ModState,dc_vector = DC_Vector}) ->
+       State=#state{idx=Idx, mod=Mod, modstate=ModState}) ->
     StartTS = os:timestamp(),
     {Retval, ModState1} = do_get_term(BKey, Mod, ModState),
     case Retval of
@@ -1945,7 +1835,7 @@ do_get(_Sender, BKey, ReqID,
             ok
     end,
     update_vnode_stats(vnode_get, Idx, StartTS),
-    {reply, {r, Retval,DC_Vector, Idx, ReqID}, State#state{modstate=ModState1}}.
+    {reply, {r, Retval, Idx, ReqID}, State#state{modstate=ModState1}}.
 
 %% @private
 -spec do_get_term({binary(), binary()}, atom(), tuple()) ->

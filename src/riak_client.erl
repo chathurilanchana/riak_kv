@@ -834,7 +834,7 @@ wait_for_get_reqid(ReqId, Timeout) ->
                     ok
             end,
             Response;
-        {ReqId, Response,Vector} -> {Response,Vector}
+        {ReqId, Response} -> Response
     after Timeout ->
         {error, timeout}
     end.
