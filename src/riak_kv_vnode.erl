@@ -604,7 +604,7 @@ handle_command({set_receivers, Receivers}, _From, S0) ->
   {reply, ok, S0#state{receivers=Receivers}};
 
 
-handle_command(?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,sender_dc_id = Sender_DcId,timestamp = _Timestamp}, _Sender, State=#state{idx=Idx})->
+handle_command(?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,sender_dc_id = _Sender_DcId,timestamp = _Timestamp}, _Sender, State=#state{idx=Idx})->
   %lager:info("vnode received remote data"),
   StartTime = riak_core_util:moment(),
   {_Reply, UpdState} = do_remote_put(BKey,  Object, StartTime, Options, State),
