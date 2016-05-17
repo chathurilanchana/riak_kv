@@ -290,12 +290,12 @@ do_possible_delivers_to_vnodes([Head|Rest],My_VClock,Sender_Dc_Id,My_Id,HasChang
             _ ->{[Head|Rest],My_VClock,HasChanged}   %labels from receiver are in order, if first is not deliverable, then we cant deliver all the rest
     end.
 
-wait_for_response()->
-    receive
-       ok ->ok
-     after 5000 ->
-        lager:info("*****TIMEOUT OCCURED AFTER SENDING A REMOTE LABEL TO A VNODE*********")
-    end.
+%wait_for_response()->
+ %   receive
+  %     ok ->ok
+   %  after 5000 ->
+    %    lager:info("*****TIMEOUT OCCURED AFTER SENDING A REMOTE LABEL TO A VNODE*********")
+    %end.
 
 process_unsatisfied_remote_labels(Remote_LabelDict,My_Vclock,My_Id)->
     {Remote_LabelDict1,My_Vclock1,New_Scan_Needed1} = lists:foldl(fun(Key, {RLabels,MVector,NScan}) ->
