@@ -283,7 +283,7 @@ do_possible_delivers_to_vnodes([Head|Rest],My_VClock,Sender_Dc_Id,My_Id,HasChang
               [{IndexNode, _Type}] = PrefList,
               riak_kv_vnode:deliver_stable_label(Head1,Sender_Dc_Id,IndexNode,self()),
 
-              wait_for_response(),
+              %wait_for_response(),
 
               do_possible_delivers_to_vnodes(Rest,Max_VClock,Sender_Dc_Id,My_Id,true);
 
