@@ -677,7 +677,7 @@ handle_command(?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,send
   <<Integer_Key:32/big>>=Key,
   Label_Data_Key={Sender_DcId,Integer_Key,Timestamp},
   {Label_Data_storage1,State1}= case dict:find(Label_Data_Key,Label_Data_storage) of
-                                   {ok,{Sender,Vector}}->
+                                   {ok,{_Sender,Vector}}->
                                         StartTime = riak_core_util:moment(),
                                        {_Reply, UpdState} = do_remote_put(BKey,  Object, StartTime, Options, State),
                                        %lager:info("Remote update from ~p applied at vnode",[Sender_DcId]),
