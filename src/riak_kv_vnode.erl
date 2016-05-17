@@ -1593,7 +1593,7 @@ apply_possible_pending_operations(GST,State,Idx,Pending_Table_Name)->
   case ets:first(Pending_Table_Name) of
     '$end_of_table' ->
       State;
-    {Timestamp, BKey,Object,Options,Receive_Time}=Key when Timestamp =< GST ->
+    {Timestamp, BKey,Object,Options,_Receive_Time}=Key when Timestamp =< GST ->
       State1=apply_remote_update(Timestamp,BKey,Object,Options,State,Idx),
       %lager:info("********remote pending update applied****** ~n"),
       true = ets:delete(Pending_Table_Name, Key),
