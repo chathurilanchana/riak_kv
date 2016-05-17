@@ -658,34 +658,14 @@ handle_command({stable_label,Label,Sender_Dc_Id,Sender},_From,State=#state{label
                                     {ok,Data}-> StartTime = riak_core_util:moment(),
                                         Object=Data#remote_received_data.object,
                                         Options=Data#remote_received_data.options,
-                                        Data_Receive_Time=Data#remote_received_data.received_time,
+                                        _Data_Receive_Time=Data#remote_received_data.received_time,
                                         {_Reply, UpdState} = do_remote_put(Label#label.bkey,  Object, StartTime, Options, State),
                                         %lager:info("Remote update from ~p applied at vnode",[Sender_Dc_Id]),
                                         Sender!ok,
 
-                                        %just to masure the visibility delay, comment after testing
-                                        Delay=riak_kv_util:get_timestamp()-Data_Receive_Time,
-                                        {Sum_Delay1,Max_Delay1,Dict1,Count1}=case Delay>0 of
-                                                                      true->
-                                                                            NewMaxDelay=max(Delay,Max_Delay),
-                                                                            Rem=Delay div 5000,%convert delay to ms,and 20 range
-
-                                                                            Rem1=case Rem>100 of
-                                                                                   true->100;
-                                                                                   _   ->Rem
-                                                                                 end,
-
-                                                                            DictNew=case dict:find(Rem1,Dict) of
-                                                                                  {ok,Value}->dict:store(Rem1,Value+1,Dict);
-                                                                                  error->dict:store(Rem1,1,Dict)
-                                                                                end,
-                                                                            {Delay+Sum_Delay,NewMaxDelay,DictNew,Count+1};
-                                                                       _   ->{Sum_Delay,Max_Delay,Dict,Count}
-                                                                   end,
-
                                          Max_Remote_VV=riak_kv_vclock:get_max_vector(Label#label.vector,Remote_VV),
                                          update_vnode_stats(vnode_put, Idx, os:timestamp()),%data has been received
-                                        {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector = Max_Remote_VV,sum_visibility_delay = Sum_Delay1,max_visibility_delay = Max_Delay1,delay_distribution = Dict1,sum_delayed_remote_writes = Count1}};
+                                        {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector = Max_Remote_VV}};
 
                                       _  ->%lager:info("cant apply label at vnode, data not received"),
                                          {dict:store(Label_Data_Key,{Sender,Label#label.vector},Label_Data_storage),State}
