@@ -1597,28 +1597,8 @@ apply_possible_pending_operations(GST,State,Idx,Pending_Table_Name)->
       State1=apply_remote_update(Timestamp,BKey,Object,Options,State,Idx),
       %lager:info("********remote pending update applied****** ~n"),
       true = ets:delete(Pending_Table_Name, Key),
-      Sum_Delay=State#state.sum_visibility_delay,Max_Delay=State#state.max_visibility_delay,Count=State#state.sum_delayed_remote_writes,
-      Dict=State#state.delay_distribution,
-      Current_Time=riak_kv_util:get_timestamp(),
-      Delay=Current_Time-Receive_Time, %we only consider the waiting time at vnode
-      {Sum_Delay1,Max_Delay1,Count1,Dict1} = case Delay>0 of
-                                              true->   Rem=Delay div 5000,%convert delay to ms,and 5 range
-                                                       Rem1=case Rem >100 of %accumulate under 500ms if delay >500ms
-                                                              true->100;
-                                                              _   ->Rem
-                                                            end,
 
-                                                       DictNew=case dict:find(Rem1,Dict) of
-                                                                    {ok,Value}->dict:store(Rem1,Value+1,Dict);
-                                                                      error->dict:store(Rem1,1,Dict)
-                                                               end,
-                                                       Max_DelayNew=max(Delay,Max_Delay),
-                                                       {Sum_Delay+Delay,Max_DelayNew,Count+1,DictNew};
-                                              false->{Sum_Delay,Max_Delay,Count,Dict}
-                                            end,
-      State2=State1#state{sum_visibility_delay = Sum_Delay1,max_visibility_delay = Max_Delay1,
-        sum_delayed_remote_writes = Count1,delay_distribution = Dict1},
-      apply_possible_pending_operations(GST,State2,Idx,Pending_Table_Name);
+      apply_possible_pending_operations(GST,State1,Idx,Pending_Table_Name);
     _Key ->
       State
   end.
