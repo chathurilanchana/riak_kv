@@ -41,9 +41,9 @@ init([Server]) ->
   connect_kernal(List_Ips),
   {ok, #state{reg_name = Server}}.
 
+
 handle_call(_Request, _From, State) ->
   {reply, ok, State}.
-
 
 %rely on similar ft logic as we implemented
 handle_cast({remote_data,BKey,Object,Options,Sender_Dc_Id,Timestamp}, State) ->
@@ -51,7 +51,7 @@ handle_cast({remote_data,BKey,Object,Options,Sender_Dc_Id,Timestamp}, State) ->
   PrefList = riak_core_apl:get_primary_apl(DocIdx, 1,riak_kv),
   [{IndexNode, _Type}] = PrefList,
   riak_kv_vnode:propagate(IndexNode, BKey, Object,Options,Sender_Dc_Id,Timestamp),
-  {noreply, State};
+  {noreply,State};
 
 handle_cast(_Request, State) ->
   {noreply, State}.

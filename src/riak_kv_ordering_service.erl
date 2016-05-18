@@ -12,7 +12,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/0,partition_heartbeat/3,add_label/3]).
+-export([start_link/0,partition_heartbeat/3, add_labels/4,remote_label_applied_by_vnode/1]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -30,8 +30,8 @@
 -define(Label_Table_Name, labels).
 
 %delay- average delay between receiving and delivering a label
--record(state, {heartbeats,reg_name,added,deleted,remote_dc_list,my_dc_id,my_logical_clock,
-    remote_vector,unsatisfied_remote_labels}).
+-record(state, {heartbeats,reg_name,remote_dc_list,my_dc_id,my_logical_clock,
+    remote_vector,unsatisfied_queues,waiting_for_vnode_reply}).
 
 %%%===================================================================
 %%% API
@@ -42,9 +42,9 @@ start_link() ->
     ServerName=string:concat(?STABILIZER_PREFIX,integer_to_list(My_DC_Id)),
     gen_server:start_link({global, ServerName}, ?MODULE, [ServerName], []).
 
-add_label(Label,Causal_Service_Id,Partition)->
+add_labels(Label,Causal_Service_Id,Partition,Clock)->
     %lager:info("label is ready to add to the ordeing service  ~p",[Label]),
-    gen_server:cast({global,Causal_Service_Id},{add_label,Label,Partition}).
+    gen_server:cast({global,Causal_Service_Id},{add_labels,Label,Partition,Clock}).
 
 deliver_to_remote_dcs(_ReversedBatch_To_Deliver,_My_Dc_Id,[])->
     noop;
@@ -56,6 +56,9 @@ deliver_to_remote_dcs(ReversedBatch_To_Deliver,My_Dc_Id,[Head|Rest])->
 
 partition_heartbeat(Partition,Clock,Causal_Service_Id)->
     gen_server:cast({global,Causal_Service_Id},{partition_heartbeat,Clock,Partition}).
+
+remote_label_applied_by_vnode(Causal_Service_Id)->
+   gen_server:cast({global,Causal_Service_Id},{vnode_applied}).
 
 %to print status when we need
 print_status()->
@@ -89,21 +92,18 @@ init([ServerName]) ->
 
     Remote_Dc_Count=app_helper:get_env(riak_kv,ordering_service_total_dcs),
     Remote_Dc_List=get_remote_dc_list(Remote_Dc_Count,My_DC_Id,?STABILIZER_PREFIX,[]),
-    lager:info("reomte dc list is ~p ~n",[Remote_Dc_List]),
+    lager:info("reomte dc list is ~p",[Remote_Dc_List]),
      Remote_Vector=getInitVector(Remote_Dc_Count,My_DC_Id,dict:new()),%indicates the updates received from remote dcs
-    UnsatisfiedRemoteLabels= get_init_remote_Label_dictionary(dict:new(),Remote_Dc_Count,My_DC_Id),
+     Pending_Queues=get_initial_pending_queues(Remote_Dc_Count,My_DC_Id,dict:new()),
 
     riak_kv_receiver_perdc:assign_convergers(), %ordering service initiate the converger logic
 
     ets:new(?Label_Table_Name, [ordered_set, named_table,private]),
     %erlang:send_after(10000, self(), print_stats),
-    {ok, #state{heartbeats = Dict1, reg_name = ServerName,remote_dc_list = Remote_Dc_List,added = 0,
-        deleted = 0,my_dc_id = My_DC_Id,remote_vector = Remote_Vector,my_logical_clock = 0,unsatisfied_remote_labels =UnsatisfiedRemoteLabels}}.
+    {ok, #state{heartbeats = Dict1, reg_name = ServerName,remote_dc_list = Remote_Dc_List
+      ,my_dc_id = My_DC_Id,remote_vector = Remote_Vector,my_logical_clock = 0,
+      unsatisfied_queues =Pending_Queues,waiting_for_vnode_reply = false}}.
 
-
-handle_call({trigger},_From, State=#state{added = Added,deleted = Deleted}) ->
-    lager:info("added count is ~p deleted count is ~p ~n",[Added,Deleted]),
-    {reply,ok,State};
 
 handle_call(_Request, _From, State) ->
      lager:info("Unexpected message received at hanlde_call"),
@@ -111,74 +111,61 @@ handle_call(_Request, _From, State) ->
 
 
 %no batching as in this case frequency is low
-handle_cast({add_label,Label,Partition},State=#state{heartbeats = Heartbeats,my_dc_id = My_Dc_Id,
-    remote_dc_list = Remote_Dc_List,added = Added,deleted = Deleted,my_logical_clock = My_Logical_Clock})->
-
-    insert_label(Label,Partition),
-    Added1=Added+1,
-    Heartbeats1= dict:store(Partition,Label#label.timestamp,Heartbeats),
-    {Deleted1,Batch_To_Deliver,My_Logical_Clock1}= get_possible_deliveries(Heartbeats1,Deleted,My_Logical_Clock,My_Dc_Id),
+handle_cast({add_labels,Labels,Partition,Clock},State=#state{heartbeats = Heartbeats,my_dc_id = My_Dc_Id,
+    remote_dc_list = Remote_Dc_List,my_logical_clock = My_Logical_Clock})->
+    Batched_Labels_To_Insert=batched_labels_to_insert(Labels,Partition,[]),
+    insert_batch_to_ets_table(Batched_Labels_To_Insert),
+    Heartbeats1= dict:store(Partition,Clock,Heartbeats),
+    {Batch_To_Deliver,My_Logical_Clock1}= get_possible_deliveries(Heartbeats1,My_Logical_Clock,My_Dc_Id),
 
     case Batch_To_Deliver of
-        [] ->noop;
-        _  ->ReversedBatch_To_Deliver=lists:reverse(Batch_To_Deliver), %as we append deleted to head, need to reverse to get in ascending order
+        [] ->
+              noop;
+        _  ->
+              ReversedBatch_To_Deliver=lists:reverse(Batch_To_Deliver), %as we append deleted to head, need to reverse to get in ascending order
              deliver_to_remote_dcs(ReversedBatch_To_Deliver,My_Dc_Id,Remote_Dc_List)
     end,
-    State1=State#state{heartbeats = Heartbeats,added = Added1,deleted = Deleted1,my_logical_clock = My_Logical_Clock1},
+    State1=State#state{heartbeats = Heartbeats1,my_logical_clock = My_Logical_Clock1},
     {noreply,State1};
 
-handle_cast({partition_heartbeat,Clock,Partition},State=#state{heartbeats = Heartbeats,my_dc_id = My_Dc_Id,remote_dc_list = Remote_Dc_List,deleted = Deleted
+handle_cast({partition_heartbeat,Clock,Partition},State=#state{heartbeats = Heartbeats,my_dc_id = My_Dc_Id,remote_dc_list = Remote_Dc_List
     ,my_logical_clock = My_Logical_Clock})->
 
     Heartbeats1=dict:store(Partition,Clock,Heartbeats),
-    {Deleted1,Batch_To_Deliver,My_Logical_Clock1}= get_possible_deliveries(Heartbeats1,Deleted,My_Logical_Clock,My_Dc_Id),
+    {Batch_To_Deliver,My_Logical_Clock1}= get_possible_deliveries(Heartbeats1,My_Logical_Clock,My_Dc_Id),
 
     case Batch_To_Deliver of
         [] ->noop;
         _  -> ReversedBatch_To_Deliver=lists:reverse(Batch_To_Deliver),
              deliver_to_remote_dcs(ReversedBatch_To_Deliver,My_Dc_Id,Remote_Dc_List)
     end,
-    State1=State#state{heartbeats = Heartbeats1,my_logical_clock = My_Logical_Clock1,deleted = Deleted1},
+    State1=State#state{heartbeats = Heartbeats1,my_logical_clock = My_Logical_Clock1},
     {noreply,State1};
 
-%#dcs>3, otherwise we dont need any blocking.
-handle_cast({remote_labels,Batch_To_Deliver,Sender_Dc_Id},State=#state{remote_vector = Remote_VClock, unsatisfied_remote_labels = Remote_LabelDict,my_dc_id = My_Id})->
-     [Head|_]=Batch_To_Deliver,
-     Remote_Received=dict:erase(My_Id,Head#label.vector),
-     IsDeliverable=riak_kv_vclock:is_label_deliverable(Remote_VClock,Remote_Received,Sender_Dc_Id),
+%check whether anything is deliverable in list
+handle_cast({vnode_applied},State=#state{my_dc_id = My_Id,remote_vector = My_Vclock,unsatisfied_queues = Pendings})->
+  lager:info("*******vnode reply received ~n******"),
+  {Pendings1,My_Vclock1,ShouldWait}=process_unsatisfied_remote_labels(My_Vclock,My_Id,Pendings),
+{noreply,State#state{remote_vector = My_Vclock1,unsatisfied_queues = Pendings1,waiting_for_vnode_reply = ShouldWait}};
 
-     %we only check this if head is deliverable from received batch
-{Remote_LabelDict2,My_Vclock2}=
-     case IsDeliverable of
-         true->%lager:info("YEYYYYYYYYY RECEIVED SOMETHING DELIVERABLE"),
-               {Remaining,My_Vclock1,_HasChanged}=do_possible_delivers_to_vnodes(Batch_To_Deliver,Remote_VClock,Sender_Dc_Id,My_Id,false),
-               Remote_LabelDict1= case Remaining of
-                                           []->Remote_LabelDict;
-                                           Labels->Old_From_Receiver=dict:fetch(Sender_Dc_Id,Remote_LabelDict),
-                                                   Labels1=Old_From_Receiver ++ Labels,
-                                                   dict:store(Sender_Dc_Id,Labels1,Remote_LabelDict)
+%#dcs>3, otherwise we dont need any blocking.
+handle_cast({remote_labels,Batch_To_Deliver,Sender_Dc_Id},State=#state{remote_vector = My_VClock, unsatisfied_queues = Pendings,my_dc_id = My_Id,waiting_for_vnode_reply = ShouldWait})->
+      {Head, Tail, PendingOps_Table} = dict:fetch(Sender_Dc_Id, Pendings),
+      Tail1=insert_remote_labels_to_queue(Batch_To_Deliver,Tail,PendingOps_Table),
+      Pendings1 = dict:store(Sender_Dc_Id, {Head, Tail1, PendingOps_Table}, Pendings),
+
+
+
+      {Pendings2,My_Vclock1,ShouldWait1} =  case ShouldWait of
+                                          false ->process_unsatisfied_remote_labels(My_VClock,My_Id,Pendings1);
+                                            _   ->{Pendings1,My_VClock,ShouldWait}
                                        end,
 
-%after delivering received, we need to check whether we can delete any in the unsatisfied list
-                process_unsatisfied_remote_labels(Remote_LabelDict1,My_Vclock1,My_Id);
-
-%nothing to deliver, append received to the sender's list
-            _-> Old_From_Receiver=dict:fetch(Sender_Dc_Id,Remote_LabelDict),
-                Labels1=Old_From_Receiver ++ Batch_To_Deliver,
-                {dict:store(Sender_Dc_Id,Labels1,Remote_LabelDict),Remote_VClock}
-     end,
-    {noreply,State#state{remote_vector = My_Vclock2,unsatisfied_remote_labels = Remote_LabelDict2}};
+    {noreply,State#state{remote_vector = My_Vclock1,unsatisfied_queues = Pendings2,waiting_for_vnode_reply = ShouldWait1}};
 
 handle_cast(_Request, State) ->
     lager:error("received an unexpected  message ~n"),
     {noreply, State}.
-
-handle_info(print_stats, State=#state{added = Added,deleted = Deleted}) ->
-    {_,{Hour,Min,Sec}} = erlang:localtime(),
-    lager:info("timestamp ~p: ~p: ~p: added ~p deleted ~p ~n",[Hour,Min,Sec,Added,Deleted]),
-
-    erlang:send_after(10000, self(), print_stats),
-    {noreply, State};
 
 
 handle_info(_Info, State) ->
@@ -203,13 +190,24 @@ get_remote_dc_list(Remote_Dc_Id,My_Dc_Id,ServerName_Prefix,Remote_DC_List)->
             end.
 
 
-get_possible_deliveries(Heartbeats,Deleted,My_Logical_Clock,My_Dc_Id)->
+get_possible_deliveries(Heartbeats,My_Logical_Clock,My_Dc_Id)->
     Min_Stable_Timestamp=get_stable_timestamp(Heartbeats),
-    deliverable_labels(Min_Stable_Timestamp,Deleted,[],My_Logical_Clock,My_Dc_Id).
+    deliverable_labels(Min_Stable_Timestamp,[],My_Logical_Clock,My_Dc_Id).
 
-insert_label(Label,Partition)->
-    Label_Timestamp=Label#label.timestamp,
-    ets:insert(?Label_Table_Name,{{Label_Timestamp,Partition,Label},dt}).
+batched_labels_to_insert([],_Partition,Batch_To_Insert)->
+  Batch_To_Insert;
+
+
+batched_labels_to_insert([Head|Rest],Partition,Batch_To_Insert)->
+  Label_Timestamp=Head#label.timestamp,
+  batched_labels_to_insert(Rest,Partition,[{{Label_Timestamp,Partition,Head},dt}|Batch_To_Insert]).
+
+insert_batch_to_ets_table(Batch_To_Insert)->
+  ets:insert(?Label_Table_Name,Batch_To_Insert).
+
+%insert_label(Label,Partition)->
+   % Label_Timestamp=Label#label.timestamp,
+   % ets:insert(?Label_Table_Name,{{Label_Timestamp,Partition,Label},dt}).
 
 get_stable_timestamp(Heartbeats)->
     HB_List=dict:to_list(Heartbeats),
@@ -224,17 +222,17 @@ get_stable_timestamp(Heartbeats)->
 
 
 %for now batch_delivery size does not matter. If there are heavy deletes, do batchwise
-deliverable_labels(Min_Stable_Timestamp,Deleted,Batch_To_Deliver,My_Logical_Clock,My_Dc_Id)->
+deliverable_labels(Min_Stable_Timestamp,Batch_To_Deliver,My_Logical_Clock,My_Dc_Id)->
     case ets:first(?Label_Table_Name)  of
-        '$end_of_table' -> {Deleted,Batch_To_Deliver,My_Logical_Clock};
+        '$end_of_table' -> {Batch_To_Deliver,My_Logical_Clock};
         {Timestamp,_Partition,Label}=Key when Timestamp=<Min_Stable_Timestamp ->
             ets:delete(?Label_Table_Name,Key),
              My_Logical_Clock1=My_Logical_Clock+1,
              VClock1=Label#label.vector,
              VClock2=dict:store(My_Dc_Id,My_Logical_Clock1,VClock1),
              Label1=Label#label{vector = VClock2},% before delivery, we have to pump this dc's logical clock
-             deliverable_labels(Min_Stable_Timestamp,Deleted+1,[Label1|Batch_To_Deliver],My_Logical_Clock1,My_Dc_Id);
-        {_Timestamp,_Partition,_Label}->{Deleted,Batch_To_Deliver,My_Logical_Clock}
+             deliverable_labels(Min_Stable_Timestamp,[Label1|Batch_To_Deliver],My_Logical_Clock1,My_Dc_Id);
+        {_Timestamp,_Partition,_Label}->{Batch_To_Deliver,My_Logical_Clock}
     end.
 
 
@@ -254,40 +252,47 @@ getInitVector(Total_DC_Count,My_Id,Dict)->
             getInitVector(Total_DC_Count-1,My_Id,Dict1)
     end.
 
-get_init_remote_Label_dictionary(Dict,Remote_Dc_Count,My_DC_Id)->
-    case Remote_Dc_Count of
-               0   ->Dict;
-        My_DC_Id   -> get_init_remote_Label_dictionary(Dict,Remote_Dc_Count-1,My_DC_Id);
-              _    ->Dict1=dict:store(Remote_Dc_Count,[],Dict),
-                     get_init_remote_Label_dictionary(Dict1,Remote_Dc_Count-1,My_DC_Id)
-    end.
+get_initial_pending_queues(Total_DC_Count,My_DC_Id,Dict)->
+  case Total_DC_Count of
+    0->Dict;
+    My_DC_Id-> get_initial_pending_queues(Total_DC_Count-1,My_DC_Id,Dict);
+    _->
+      Name = list_to_atom(integer_to_list(Total_DC_Count) ++  atom_to_list(unsatisfied_labels)),
+      Table = ets:new(Name, [set, named_table, private]),
+      Dict1=dict:store(Total_DC_Count, {0, 0, Table}, Dict),
+      get_initial_pending_queues(Total_DC_Count-1,My_DC_Id,Dict1)
+  end.
 
 %%%===================================================================
 %%% Remote Label specific functions
 %%%===================================================================
-do_possible_delivers_to_vnodes([],My_VClock,_Sender_Dc_Id,_My_Id,HasChanged)->
-    {[],My_VClock,HasChanged};
+insert_remote_labels_to_queue([],Tail,_PendingOps)->
+  Tail;
 
-do_possible_delivers_to_vnodes([Head|Rest],My_VClock,Sender_Dc_Id,My_Id,HasChanged)->
-    Received_VClock=Head#label.vector,
+insert_remote_labels_to_queue([Head_L|Rest_L],Tail,PendingOps)->
+  ets:insert(PendingOps, {Tail, Head_L}),
+  insert_remote_labels_to_queue(Rest_L,Tail+1,PendingOps).
+
+deliver_head_label_to_vnode(Label,My_VClock,Sender_Dc_Id,My_Id)->
+    Received_VClock=Label#label.vector,
     Received_Remote_Vclock=dict:erase(My_Id,Received_VClock),
     IsDeliverable=riak_kv_vclock:is_label_deliverable(My_VClock,Received_Remote_Vclock,Sender_Dc_Id),
 
     case IsDeliverable of
         true->
+              lager:info("there is something to deliver to vnode ~n"),
               Max_VClock=riak_kv_vclock:get_max_vector(My_VClock,Received_Remote_Vclock),
                %update the clock of the label
-              Head1=Head#label{vector = Max_VClock},
-              DocIdx = riak_core_util:chash_key(Head#label.bkey),
+              Label1=Label#label{vector = Max_VClock},
+              DocIdx = riak_core_util:chash_key(Label#label.bkey),
               PrefList = riak_core_apl:get_primary_apl(DocIdx, 1,riak_kv),
               [{IndexNode, _Type}] = PrefList,
-              riak_kv_vnode:deliver_stable_label(Head1,Sender_Dc_Id,IndexNode,self()),
+              riak_kv_vnode:deliver_stable_label(Label1,Sender_Dc_Id,IndexNode,self()),
 
               %wait_for_response(),
+              {Max_VClock,true };
 
-              do_possible_delivers_to_vnodes(Rest,Max_VClock,Sender_Dc_Id,My_Id,true);
-
-            _ ->{[Head|Rest],My_VClock,HasChanged}   %labels from receiver are in order, if first is not deliverable, then we cant deliver all the rest
+            _ ->{My_VClock,false}   %labels from receiver are in order, if first is not deliverable, then we cant deliver all the rest
     end.
 
 %wait_for_response()->
@@ -297,23 +302,28 @@ do_possible_delivers_to_vnodes([Head|Rest],My_VClock,Sender_Dc_Id,My_Id,HasChang
     %    lager:info("*****TIMEOUT OCCURED AFTER SENDING A REMOTE LABEL TO A VNODE*********")
     %end.
 
-process_unsatisfied_remote_labels(Remote_LabelDict,My_Vclock,My_Id)->
-    {Remote_LabelDict1,My_Vclock1,New_Scan_Needed1} = lists:foldl(fun(Key, {RLabels,MVector,NScan}) ->
-    List= dict:fetch(Key, Remote_LabelDict),
-      case List of
-            []->{RLabels,MVector,NScan};
-            _ ->{Rest,Clock,HasChanged}=do_possible_delivers_to_vnodes(List,MVector,Key,My_Id,false),
-                        case HasChanged of
-                            true  -> {dict:store(Key,Rest,RLabels),Clock,true};
-                                _ -> {RLabels,MVector,NScan}
-                        end
-      end
-    end, {Remote_LabelDict,My_Vclock,false},dict:fetch_keys(Remote_LabelDict)),
+process_unsatisfied_remote_labels(My_Vclock,My_Id,Pending_Queues)->
+   Dc_List=dict:fetch_keys(Pending_Queues),
+   apply_possible_labels(Dc_List,Pending_Queues,My_Vclock,My_Id).
 
-%if a label is delivered from 1 dc, we need to scan whole other dc list again to see whether anything else is deliverable
-       case New_Scan_Needed1 of
-              true-> process_unsatisfied_remote_labels(Remote_LabelDict1,My_Vclock1,My_Id);
-              _   -> {Remote_LabelDict1,My_Vclock1}
-       end.
+apply_possible_labels([],Pending_Queues,My_Vclock,_My_Id)->
+  {Pending_Queues,My_Vclock,false};
 
+apply_possible_labels([Head_DC|Rest],Pending_Queues,My_Vclock,My_Id)->
+  {Head, Tail, PendingOps_Table}= dict:fetch(Head_DC, Pending_Queues),
+
+  case Head=:=Tail of
+    true-> Pending_Queues1 = dict:store(Head_DC, {0, 0, PendingOps_Table}, Pending_Queues),
+           {Pending_Queues1,My_Vclock,false};
+      _ ->  case ets:lookup(PendingOps_Table, Head) of
+              [{Head,Label}]->{Clock,IsDeliverable}= deliver_head_label_to_vnode(Label,My_Vclock,Head_DC,My_Id),
+                case IsDeliverable of
+                  true  ->true = ets:delete(PendingOps_Table, Head),
+                    Pending_Queues1 = dict:store(Head_DC, {Head+1, Tail, PendingOps_Table}, Pending_Queues),
+                    {Pending_Queues1,Clock,true};
+                  _ -> apply_possible_labels(Rest,Pending_Queues,My_Vclock,My_Id)
+                end;
+              _ ->apply_possible_labels(Rest,Pending_Queues,My_Vclock,My_Id)
+            end
+   end.
 
