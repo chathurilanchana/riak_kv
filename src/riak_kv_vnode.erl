@@ -663,7 +663,6 @@ handle_command({stable_label,Label,Sender_Dc_Id,Sender},_From,State=#state{label
                                         Options=Data#remote_received_data.options,
                                         _Data_Receive_Time=Data#remote_received_data.received_time,
                                         {_Reply, UpdState} = do_remote_put(Label#label.bkey,  Object, StartTime, Options, State),
-                                         lager:info("Remote update from ~p applied at vnode",[Sender_Dc_Id]),
                                          Sender!ok,
                                          Max_Remote_VV=riak_kv_vclock:get_max_vector(Label#label.vector,Remote_VV),
                                          update_vnode_stats(vnode_put, Idx, os:timestamp()),%data has been received
@@ -690,7 +689,7 @@ handle_command(?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,send
                                        Max_Remote_VV=riak_kv_vclock:get_max_vector(Vector,Remote_VV),
                                        {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector =Max_Remote_VV}};
 
-                                   _  -> 
+                                   _  ->
                                         Received_Object=#remote_received_data{object = Object,options = Options,received_time = riak_kv_util:get_timestamp()},
                                         {dict:store(Label_Data_Key,Received_Object,Label_Data_storage),State}
                                  end,
