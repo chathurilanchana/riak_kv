@@ -78,7 +78,7 @@
 
 -export([handoff_data_encoding_method/0]).
 -export([set_vnode_forwarding/2]).
--export([heartbeat/1,set_receivers/2,propagate/6,deliver_stable_label/4,print_vnode_remote_delay_statistics/0]).
+-export([heartbeat/1,set_receivers/2,propagate/6,deliver_stable_label/3,print_vnode_remote_delay_statistics/0]).
 
 -include_lib("riak_kv_vnode.hrl").
 -include_lib("riak_kv_index.hrl").
@@ -143,6 +143,7 @@
                 labels_to_deliver,
                 max_ts::non_neg_integer(),
                 causal_service_reg_name::atom(),
+                ord_service_remote_receiver,
                 ordering_service_hb_freq::non_neg_integer(),
                 receivers,
                 dc_vector,
@@ -229,8 +230,8 @@ set_receivers(Node, Receivers)->
 propagate(IndexNode, BKey, Object,Options,My_Dc_Id,Timestamp)->
   riak_core_vnode_master:sync_command(IndexNode, ?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,sender_dc_id = My_Dc_Id,timestamp = Timestamp},riak_kv_vnode_master).
 
-deliver_stable_label(Label,Sender_Dc_Id,Node,Sender)->
-  riak_core_vnode_master:command(Node, {stable_label,Label,Sender_Dc_Id,Sender}, {fsm, undefined, self()}, riak_kv_vnode_master).
+deliver_stable_label(Label,Sender_Dc_Id,Node)->
+  riak_core_vnode_master:command(Node, {stable_label,Label,Sender_Dc_Id}, {fsm, undefined, self()}, riak_kv_vnode_master).
 
 print_vnode_remote_delay_statistics()->
   {ok, Ring} = riak_core_ring_manager:get_my_ring(),
@@ -528,6 +529,7 @@ init([Index]) ->
             %ordering service specific params
             My_DC_Id=app_helper:get_env(riak_kv,ordering_service_my_dc_id),
             Causal_Service_Name=string:concat(?STABILIZER_PREFIX,integer_to_list(My_DC_Id)),
+            Ordering_Service_Remote_Receiver=string:concat(?REMOTE_ORD_SERVER_PREFIX,integer_to_list(My_DC_Id)),
             Ordering_Service_Hb_Freq=app_helper:get_env(riak_kv, ordering_service_hb_freq),
 
             Total_DC_Count=app_helper:get_env(riak_kv,ordering_service_total_dcs),
@@ -537,6 +539,7 @@ init([Index]) ->
                            labels_to_deliver = [],
                            max_ts =0,
                            causal_service_reg_name = Causal_Service_Name,
+                           ord_service_remote_receiver = Ordering_Service_Remote_Receiver,
                            ordering_service_hb_freq = Ordering_Service_Hb_Freq,
                            my_dc_id = My_DC_Id,
                            dc_vector =DC_Vector,
@@ -653,7 +656,7 @@ handle_command({vnode_remote_delay_stats},_From,State=#state{max_visibility_dela
          {noreply,State};
 
 %when receives a label, check whether data is available, if so apply it and update the vector, otherwise wait for data
-handle_command({stable_label,Label,Sender_Dc_Id,Sender},_From,State=#state{label_data_storage = Label_Data_storage,idx = Idx,dc_vector = Remote_VV, causal_service_reg_name =Causal_Service_Id})->
+handle_command({stable_label,Label,Sender_Dc_Id},_From,State=#state{label_data_storage = Label_Data_storage,idx = Idx,dc_vector = Remote_VV, ord_service_remote_receiver = Ordering_Service_Remote_receiver})->
   %lager:info("A deliverable label is received from ~p label is ~p",[Sender_Dc_Id,Label]),
   {_Bucket,Key}=Label#label.bkey,
   <<Integer_Key:32/big>>=Key,
@@ -664,30 +667,28 @@ handle_command({stable_label,Label,Sender_Dc_Id,Sender},_From,State=#state{label
                                         Options=Data#remote_received_data.options,
                                         _Data_Receive_Time=Data#remote_received_data.received_time,
                                         {_Reply, UpdState} = do_remote_put(Label#label.bkey,  Object, StartTime, Options, State),
-                                        lager:info("vnode applied remote data"),
-                                         riak_kv_ordering_service:remote_label_applied_by_vnode(Causal_Service_Id),
+                                         riak_kv_remote_os:remote_label_applied_by_vnode(Ordering_Service_Remote_receiver),
                                          Max_Remote_VV=riak_kv_vclock:get_max_vector(Label#label.vector,Remote_VV),
                                          update_vnode_stats(vnode_put, Idx, os:timestamp()),%data has been received
                                         {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector = Max_Remote_VV}};
 
-                                      _  ->lager:info("cant apply label at vnode, data not received"),
-                                         {dict:store(Label_Data_Key,{Sender,Label#label.vector},Label_Data_storage),State}
+                                      _  ->
+                                         {dict:store(Label_Data_Key,Label#label.vector,Label_Data_storage),State}
                                 end,
 
   {noreply,State1#state{label_data_storage =Label_Data_storage1 }};
 
 handle_command(?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,sender_dc_id = Sender_DcId,timestamp = Timestamp}, _Sender, State=#state{idx=Idx,label_data_storage = Label_Data_storage,
-  dc_vector = Remote_VV,causal_service_reg_name =Causal_Service_Id})->
-  lager:info("vnode received remote data"),
+  dc_vector = Remote_VV,ord_service_remote_receiver = Ordering_Service_Remote_Receiver})->
   {_Bucket,Key}=BKey,
   <<Integer_Key:32/big>>=Key,
   Label_Data_Key={Sender_DcId,Integer_Key,Timestamp},
   {Label_Data_storage1,State1}= case dict:find(Label_Data_Key,Label_Data_storage) of
-                                   {ok,{_Sender,Vector}}->
+                                   {ok,Vector}->
                                         StartTime = riak_core_util:moment(),
+                                        %lager:info("Remote update from ~p applied at vnode",[Sender_DcId]),
                                        {_Reply, UpdState} = do_remote_put(BKey,  Object, StartTime, Options, State),
-                                       lager:info("Remote update from ~p applied at vnode",[Sender_DcId]),
-                                       riak_kv_ordering_service:remote_label_applied_by_vnode(Causal_Service_Id),
+                                       riak_kv_remote_os:remote_label_applied_by_vnode(Ordering_Service_Remote_Receiver),
                                        update_vnode_stats(vnode_put, Idx, os:timestamp()),
                                        Max_Remote_VV=riak_kv_vclock:get_max_vector(Vector,Remote_VV),
                                        {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector =Max_Remote_VV}};

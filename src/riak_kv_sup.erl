@@ -31,7 +31,7 @@
 
 -export([start_link/0]).
 -export([init/1]).
--export([start_ordering_service/0,stop_ordering_service/1,start_receiver/0]).
+-export([start_ordering_service/0,stop_ordering_service/1,start_receiver/0,start_remote_label_receiver/0]).
 
 -define (IF (Bool, A, B), if Bool -> A; true -> B end).
 
@@ -57,6 +57,12 @@ start_receiver()->
   supervisor:start_child(?MODULE,{riak_kv_receiver_perdc,
     {riak_kv_receiver_perdc, start_link, []},
     permanent, 5000, worker, [riak_kv_receiver_perdc]}).
+
+start_remote_label_receiver()->
+  lager:info("starting remote label receiver"),
+  supervisor:start_child(?MODULE,{riak_kv_remote_os,
+  {riak_kv_remote_os, start_link, []},
+  permanent, 5000, worker, [riak_kv_remote_os]}).
 
 
 %% @spec init([]) -> SupervisorTree
