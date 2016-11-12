@@ -722,8 +722,6 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
      Label=riak_kv_causal_service_util:create_label(BKey,MaxTS0,CVector),
      Labels_To_Deliver1=[Label|Labels_To_Deliver],
 
-     riak_kv_ordering_service:add_label(Label,Causal_Service_Id,Idx),
-
     %propagate data to one per each receiver other than me
     lists:foreach(fun(Key) ->
         List= dict:fetch(Key, Receivers),
