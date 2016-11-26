@@ -9,7 +9,6 @@
 -author("chathuri").
 -record(label,{
     bkey,
-    timestamp,
     vector
 }).
 -define(STABILIZER_PREFIX, "riak_kv_ord_service_").

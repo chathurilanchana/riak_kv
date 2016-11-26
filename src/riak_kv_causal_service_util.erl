@@ -10,7 +10,7 @@
 -author("chathuri").
 -include("riak_kv_causal_service.hrl").
 %% API
--export([create_label/3]).
+-export([create_label/2]).
 
-create_label(BKey,Timestamp,Vector)->
-    #label{bkey = BKey,timestamp = Timestamp,vector=Vector}.
+create_label(BKey,Vector)->
+    #label{bkey = BKey,vector=Vector}.
