@@ -110,7 +110,7 @@ handle_cast({remote_labels,Batch_To_Deliver,Sender_Dc_Id},State=#state{remote_ve
     {noreply,State#state{remote_vector = My_Vclock1,unsatisfied_queues = Pendings2,waiting_for_vnode_reply = ShouldWait1}};
 
 handle_cast(_Request, State) ->
-    lager:error("received an unexpected  message ~n"),
+    lager:info("received an unexpected  message ~n"),
     {noreply, State}.
 
 
@@ -178,11 +178,10 @@ deliver_head_label_to_vnode(Label,My_VClock,Sender_Dc_Id,My_Id)->
               PrefList = riak_core_apl:get_primary_apl(DocIdx, 1,riak_kv),
               [{IndexNode, _Type}] = PrefList,
               riak_kv_vnode:deliver_stable_label(Label1,Sender_Dc_Id,IndexNode),
-
               %wait_for_response(),
               {Max_VClock,true };
 
-            _ ->{My_VClock,false}   %labels from receiver are in order, if first is not deliverable, then we cant deliver all the rest
+            _ -> {My_VClock,false}   %labels from receiver are in order, if first is not deliverable, then we cant deliver all the rest
     end.
 
 %wait_for_response()->
@@ -202,10 +201,10 @@ apply_possible_labels([],Pending_Queues,My_Vclock,_My_Id)->
 apply_possible_labels([Head_DC|Rest],Pending_Queues,My_Vclock,My_Id)->
   {Head, Tail, PendingOps_Table}= dict:fetch(Head_DC, Pending_Queues),
 
-  case Head=:=Tail of
-     true-> Pending_Queues1 = dict:store(Head_DC, {0, 0, PendingOps_Table}, Pending_Queues),
-           {Pending_Queues1,My_Vclock,false};
-      _ ->
+ % case Head=:=Tail of
+ %    true-> Pending_Queues1 = dict:store(Head_DC, {0, 0, PendingOps_Table}, Pending_Queues),
+  %         {Pending_Queues1,My_Vclock,false};
+   %   _ ->
   case ets:lookup(PendingOps_Table, Head) of
               [{Head,Label}]->{Clock,IsDeliverable}= deliver_head_label_to_vnode(Label,My_Vclock,Head_DC,My_Id),
                 case IsDeliverable of
@@ -215,6 +214,6 @@ apply_possible_labels([Head_DC|Rest],Pending_Queues,My_Vclock,My_Id)->
                   _ -> apply_possible_labels(Rest,Pending_Queues,My_Vclock,My_Id)
                 end;
               _ ->apply_possible_labels(Rest,Pending_Queues,My_Vclock,My_Id)
-            end
+        %    end
    end.
 

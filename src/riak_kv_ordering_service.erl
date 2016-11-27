@@ -85,8 +85,7 @@ handle_info(deliver_remote_labels,State=#state{my_dc_id = My_Dc_Id,
             noop;
         _  ->
             ReversedBatch_To_Deliver=lists:reverse(Labels), %as we append deleted to head, need to reverse to get in ascending order
-            riak_kv_remote_os:deliver_to_remote_dcs (ReversedBatch_To_Deliver,My_Dc_Id,Remote_Dc_List),
-            lager:info("sending received labels from ordering service")
+            riak_kv_remote_os:deliver_to_remote_dcs (ReversedBatch_To_Deliver,My_Dc_Id,Remote_Dc_List)
 
     end,
     erlang:send_after(10, self(), deliver_remote_labels),
@@ -97,7 +96,7 @@ handle_call({add_label,Label,_Partition},_From,State=#state{my_logical_clock = M
     My_Logical_Clock1 = My_Logical_Clock+1,
     VClock1=Label#label.vector,
     VClock2=dict:store(My_Dc_Id,My_Logical_Clock1,VClock1),
-    Label1=Label#label{vector = VClock2},
+    Label1=Label#label{vector = VClock2,timestamp=My_Logical_Clock1},
     Batched_Labels_To_Deliver=[Label1|Labels],
     {reply,{ok,My_Logical_Clock1},State#state{my_logical_clock = My_Logical_Clock1, labels = Batched_Labels_To_Deliver}}.
 

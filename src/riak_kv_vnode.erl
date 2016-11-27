@@ -635,10 +635,10 @@ handle_command({vnode_remote_delay_stats},_From,State=#state{max_visibility_dela
 
 %when receives a label, check whether data is available, if so apply it and update the vector, otherwise wait for data
 handle_command({stable_label,Label,Sender_Dc_Id},_From,State=#state{label_data_storage = Label_Data_storage,idx = Idx,dc_vector = Remote_VV, ord_service_remote_receiver = Ordering_Service_Remote_receiver})->
-  %lager:info("A deliverable label is received from ~p label is ~p",[Sender_Dc_Id,Label]),
+  %lager:info("label received, waiting for data ~p",[Label#label.timestamp]),
   {_Bucket,Key}=Label#label.bkey,
   <<Integer_Key:32/big>>=Key,
-  Label_Data_Key={Sender_Dc_Id,Integer_Key},
+  Label_Data_Key={Sender_Dc_Id,Integer_Key,Label#label.timestamp},
   {Label_Data_storage1,State1}= case dict:find(Label_Data_Key,Label_Data_storage) of
                                     {ok,Data}-> StartTime = riak_core_util:moment(),
                                         Object=Data#remote_received_data.object,
@@ -650,28 +650,28 @@ handle_command({stable_label,Label,Sender_Dc_Id},_From,State=#state{label_data_s
                                         lager:info("Remote update from othrr dc applied at vnode"),
                                         {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector = Max_Remote_VV}};
                                       _  ->
-                                          lager:info("cant apply data at vnode, waiting for label"),
+                                          %lager:info("cant apply data at vnode, waiting for data ~p",[Label#label.timestamp]),
                                          {dict:store(Label_Data_Key,Label#label.vector,Label_Data_storage),State}
                                 end,
 
   {noreply,State1#state{label_data_storage =Label_Data_storage1 }};
 
-handle_command(?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,sender_dc_id = Sender_DcId,timestamp = _Timestamp}, _Sender, State=#state{idx=Idx,label_data_storage = Label_Data_storage,
+handle_command(?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,sender_dc_id = Sender_DcId,timestamp = SequenceNumber}, _Sender, State=#state{idx=Idx,label_data_storage = Label_Data_storage,
   dc_vector = Remote_VV,ord_service_remote_receiver = Ordering_Service_Remote_Receiver})->
   {_Bucket,Key}=BKey,
   <<Integer_Key:32/big>>=Key,
-  Label_Data_Key={Sender_DcId,Integer_Key},
+  Label_Data_Key={Sender_DcId,Integer_Key,SequenceNumber},
   {Label_Data_storage1,State1}= case dict:find(Label_Data_Key,Label_Data_storage) of
                                    {ok,Vector}->
                                         StartTime = riak_core_util:moment(),
-                                        lager:info("Remote update from ~p applied at vnode",[Sender_DcId]),
+                                        lager:info("Remote update from ~p applied at vnode vector is ~p local vec is ~p",[Sender_DcId,Vector,Remote_VV]),
                                        {_Reply, UpdState} = do_remote_put(BKey,  Object, StartTime, Options, State),
                                        riak_kv_remote_os:remote_label_applied_by_vnode(Ordering_Service_Remote_Receiver),
                                        update_vnode_stats(vnode_put, Idx, os:timestamp()),
                                        Max_Remote_VV=riak_kv_vclock:get_max_vector(Vector,Remote_VV),
                                        {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector =Max_Remote_VV}};
 
-                                   _  -> lager:info("cant apply data at vnode, waiting for label"),
+                                   _  -> %lager:info("cant apply data at vnode, waiting for label ~p",[SequenceNumber]),
                                         Received_Object=#remote_received_data{object = Object,options = Options,received_time = riak_kv_util:get_timestamp()},
                                         {dict:store(Label_Data_Key,Received_Object,Label_Data_storage),State}
                                  end,
@@ -705,7 +705,7 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
         {ListPos, _} = random:uniform_s(length(List), os:timestamp()),
         RemoteReceiverName=lists:nth(ListPos, List),
         %lager:info("list member for dcid ~p is ~p ~n",[Key,RemoteReceiverName]),
-        riak_kv_data_propagator:propagate_data(BKey,NewObj1,Options,My_Dc_Id,StartTS,RemoteReceiverName)
+        riak_kv_data_propagator:propagate_data(BKey,NewObj1,Options,My_Dc_Id,SeqNumber,RemoteReceiverName)
                 end, dict:fetch_keys(Receivers)),
 
     update_vnode_stats(vnode_put, Idx, StartTS),
