@@ -647,7 +647,6 @@ handle_command({stable_label,Label,Sender_Dc_Id},_From,State=#state{label_data_s
                                          riak_kv_remote_os:remote_label_applied_by_vnode(Ordering_Service_Remote_receiver),
                                          Max_Remote_VV=riak_kv_vclock:get_max_vector(Label#label.vector,Remote_VV),
                                          update_vnode_stats(vnode_put, Idx, os:timestamp()),%data has been received
-                                        lager:info("Remote update from othrr dc applied at vnode"),
                                         {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector = Max_Remote_VV}};
                                       _  ->
                                           %lager:info("cant apply data at vnode, waiting for data ~p",[Label#label.timestamp]),
@@ -664,7 +663,6 @@ handle_command(?KV_REMOTE_PUT_REQ{bkey=BKey, object=Object, options=Options,send
   {Label_Data_storage1,State1}= case dict:find(Label_Data_Key,Label_Data_storage) of
                                    {ok,Vector}->
                                         StartTime = riak_core_util:moment(),
-                                        lager:info("Remote update from ~p applied at vnode vector is ~p local vec is ~p",[Sender_DcId,Vector,Remote_VV]),
                                        {_Reply, UpdState} = do_remote_put(BKey,  Object, StartTime, Options, State),
                                        riak_kv_remote_os:remote_label_applied_by_vnode(Ordering_Service_Remote_Receiver),
                                        update_vnode_stats(vnode_put, Idx, os:timestamp()),

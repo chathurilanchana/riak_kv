@@ -90,7 +90,6 @@ handle_call(_Request, _From, State) ->
 
 %check whether anything is deliverable in list
 handle_cast({vnode_applied},State=#state{my_dc_id = My_Id,remote_vector = My_Vclock,unsatisfied_queues = Pendings,remote_applied = Remote_Applied})->
-  lager:info("*******vnode reply received ~n******"),
   {Pendings1,My_Vclock1,ShouldWait}=process_unsatisfied_remote_labels(My_Vclock,My_Id,Pendings),
 {noreply,State#state{remote_vector = My_Vclock1,unsatisfied_queues = Pendings1,waiting_for_vnode_reply = ShouldWait,remote_applied = Remote_Applied+1}};
 
