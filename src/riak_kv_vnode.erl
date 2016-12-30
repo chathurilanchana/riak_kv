@@ -621,12 +621,8 @@ handle_command({set_receivers, Receivers}, _From, S0) ->
   {reply, ok, S0#state{receivers=Receivers}};
 
 
-handle_command({vnode_remote_delay_stats},_From,State=#state{max_visibility_delay = Max_Delay,sum_delayed_remote_writes = Count,sum_visibility_delay = Sum_Delay,delay_distribution = Dict})->
-        Avg     =     case Count>0 of
-                     true->Sum_Delay/Count;
-                        _ ->0
-                  end,
-        lager:info("===============avg delay is ~p max delay is ~p total remote writes ~p ==",[Avg,Max_Delay,Count]),
+handle_command({vnode_remote_delay_stats},_From,State=#state{delay_distribution = Dict})->
+
         lists:foreach(fun(Id) ->
                  Delay_Count=  dict:fetch(Id,Dict),
                  lager:info("key is ~p ms count is ~p ~n",[Id*5,Delay_Count])
@@ -634,7 +630,7 @@ handle_command({vnode_remote_delay_stats},_From,State=#state{max_visibility_dela
          {noreply,State};
 
 %when receives a label, check whether data is available, if so apply it and update the vector, otherwise wait for data
-handle_command({stable_label,Label,Sender_Dc_Id},_From,State=#state{label_data_storage = Label_Data_storage,idx = Idx,dc_vector = Remote_VV, ord_service_remote_receiver = Ordering_Service_Remote_receiver})->
+handle_command({stable_label,Label,Sender_Dc_Id},_From,State=#state{label_data_storage = Label_Data_storage,idx = Idx,dc_vector = Remote_VV, ord_service_remote_receiver = Ordering_Service_Remote_receiver, delay_distribution = Dict})->
   %lager:info("label received, waiting for data ~p",[Label#label.timestamp]),
   {_Bucket,Key}=Label#label.bkey,
   <<Integer_Key:32/big>>=Key,
@@ -644,10 +640,28 @@ handle_command({stable_label,Label,Sender_Dc_Id},_From,State=#state{label_data_s
                                         Object=Data#remote_received_data.object,
                                         Options=Data#remote_received_data.options,
                                         {_Reply, UpdState} = do_remote_put(Label#label.bkey,  Object, StartTime, Options, State),
-                                         riak_kv_remote_os:remote_label_applied_by_vnode(Ordering_Service_Remote_receiver),
+                                        riak_kv_remote_os:remote_label_applied_by_vnode(Ordering_Service_Remote_receiver),
+                                        Data_Receive_Time=Data#remote_received_data.received_time,
+                                        Delay=riak_kv_util:get_timestamp()-Data_Receive_Time,
+                                        Dict1=case Delay>0 of
+                                                                             true->
+                                                                               Rem=Delay div 5000,%convert delay to ms,and 5ms range
+
+                                                                               Rem1=case Rem>100 of
+                                                                                      true->100;
+                                                                                      _   ->Rem
+                                                                                    end,
+
+                                                                               DictNew=case dict:find(Rem1,Dict) of
+                                                                                         {ok,Value}->dict:store(Rem1,Value+1,Dict);
+                                                                                         error->dict:store(Rem1,1,Dict)
+                                                                                       end,
+                                                                               DictNew;
+                                                                             _   ->Dict
+                                                                           end,
                                          Max_Remote_VV=riak_kv_vclock:get_max_vector(Label#label.vector,Remote_VV),
                                          update_vnode_stats(vnode_put, Idx, os:timestamp()),%data has been received
-                                        {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector = Max_Remote_VV}};
+                                        {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector = Max_Remote_VV,delay_distribution = Dict1}};
                                       _  ->
                                           %lager:info("cant apply data at vnode, waiting for data ~p",[Label#label.timestamp]),
                                          {dict:store(Label_Data_Key,Label#label.vector,Label_Data_storage),State}
