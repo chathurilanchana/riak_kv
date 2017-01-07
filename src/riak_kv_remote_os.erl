@@ -202,10 +202,10 @@ apply_possible_labels([],Pending_Queues,My_Vclock,_My_Id)->
 apply_possible_labels([Head_DC|Rest],Pending_Queues,My_Vclock,My_Id)->
   {Head, Tail, PendingOps_Table}= dict:fetch(Head_DC, Pending_Queues),
 
-  case Head=:=Tail of
-     true-> Pending_Queues1 = dict:store(Head_DC, {0, 0, PendingOps_Table}, Pending_Queues),
-           {Pending_Queues1,My_Vclock,false};
-      _ ->
+  %case Head=:=Tail of
+  %   true-> Pending_Queues1 = dict:store(Head_DC, {0, 0, PendingOps_Table}, Pending_Queues),
+  %         {Pending_Queues1,My_Vclock,false};
+  %    _ ->
   case ets:lookup(PendingOps_Table, Head) of
               [{Head,Label}]->{Clock,IsDeliverable}= deliver_head_label_to_vnode(Label,My_Vclock,Head_DC,My_Id),
                 case IsDeliverable of
@@ -215,6 +215,6 @@ apply_possible_labels([Head_DC|Rest],Pending_Queues,My_Vclock,My_Id)->
                   _ -> apply_possible_labels(Rest,Pending_Queues,My_Vclock,My_Id)
                 end;
               _ ->apply_possible_labels(Rest,Pending_Queues,My_Vclock,My_Id)
-            end
+            %end
    end.
 

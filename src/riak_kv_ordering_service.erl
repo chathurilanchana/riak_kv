@@ -156,6 +156,7 @@ get_remote_dc_list(Remote_Dc_Id,My_Dc_Id,ServerName_Prefix,Remote_DC_List)->
 
 get_possible_deliveries(Heartbeats,My_Logical_Clock,My_Dc_Id)->
     Min_Stable_Timestamp=get_stable_timestamp(Heartbeats),
+    %lager:info("min stable is  ~p ~n",[Min_Stable_Timestamp]),
     deliverable_labels(Min_Stable_Timestamp,[],My_Logical_Clock,My_Dc_Id).
 
 batched_labels_to_insert([],_Partition,Batch_To_Insert)->
@@ -178,7 +179,6 @@ get_stable_timestamp(Heartbeats)->
     [First|Rest]=HB_List,
     {_Partition,Clock}=First,
     lists:foldl(fun({_Key,Val},Min)->
-        %lager:info("key is ~p value is ~p ~n",[Key,Val]),
         if
             Val<Min-> Val;
             true -> Min
