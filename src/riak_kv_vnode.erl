@@ -633,7 +633,7 @@ handle_command({heartbeat},_From,State=#state{max_ts = MaxTS, idx = Partition,
     Clock=max(Physical_Time,MaxTS),
 
   Labels_To_Deliver1= case Hold_Labels of
-                      true -> lager:info("holding labels"),
+                      true -> 
                               riak_core_vnode:send_command_after(Hb_Frequency, {heartbeat}),
                               Labels_To_Deliver;
 
