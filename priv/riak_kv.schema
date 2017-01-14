@@ -683,7 +683,7 @@ end
 
 {mapping, "straggler_straggling_time", "riak_kv.straggler_straggling_time", [
     {datatype, integer},
-    {default, 10000}
+    {default, 1000}
 ]}.
 
 {mapping, "ordering_service_total_dcs", "riak_kv.ordering_service_total_dcs", [

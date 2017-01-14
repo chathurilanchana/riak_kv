@@ -668,7 +668,7 @@ handle_command({check_straggler},_From,State=#state{ idx = Partition,my_dc_id = 
                         end,
 {noreply,State#state{in_straggling_mode  = In_Straggling_Mode}};
 
-handle_command({init_straggler},_From,State=#state{ idx = Partition,in_straggling_mode = In_Straggling_Mode,max_ts = MaxTS,causal_service_reg_name = Causal_Service_Id ,labels_to_deliver = Labels_To_Deliver,ordering_service_hb_freq = Hb_Frequency,  straggler_straggling_interval = Straggler_Interval})->
+handle_command({init_straggler},_From,State=#state{ idx = Partition,in_straggling_mode = In_Straggling_Mode,max_ts = MaxTS,causal_service_reg_name = Causal_Service_Id ,labels_to_deliver = Labels_To_Deliver,straggler_straggling_interval = Straggler_Interval})->
   %send labels if any
   Labels_To_Deliver1 = case In_Straggling_Mode of
                           true ->
@@ -682,7 +682,7 @@ handle_command({init_straggler},_From,State=#state{ idx = Partition,in_stragglin
                                     _ ->
                                       riak_kv_ordering_service:partition_heartbeat(Partition,Clock,Causal_Service_Id)
                                   end,
-                                riak_core_vnode:send_command_after(60000, {stop_straggler}),
+                                riak_core_vnode:send_command_after(120000, {stop_straggler}),
                                 riak_core_vnode:send_command_after(Straggler_Interval, {init_straggler}),
                                 [];
                           _-> Labels_To_Deliver
@@ -691,17 +691,18 @@ handle_command({init_straggler},_From,State=#state{ idx = Partition,in_stragglin
   {noreply,State#state{labels_to_deliver = Labels_To_Deliver1}};
 
 handle_command({stop_straggler},_From,State=#state{ idx = _Partition,ordering_service_hb_freq = Hb_Frequency})->
+  lager:info("stop straggler called"),
   riak_core_vnode:send_command_after(Hb_Frequency, {heartbeat}),  % initiate again the disabled hb during straggling time
   {noreply,State#state{in_straggling_mode = false}};
 
 handle_command({print_avg_delay},_From,State=#state{ idx = _Partition,straggler_print_avg_interval = Straggler_Print_Avg_Interval,delay_distribution = Dict, delay_tuple = {Sum_Time, Sum_Delay, Count}})->
   {Average_Time, Avg_Delay}  =  case Count>0 of
-                                  true->  {Sum_Time /Count, Sum_Delay/Count} ;
+                                  true->  {Sum_Time/Count, Sum_Delay/Count} ;
                                   _ ->{0,0}
                                 end,
   Dict1 = dict:store(Average_Time,Avg_Delay,Dict),
   riak_core_vnode:send_command_after(Straggler_Print_Avg_Interval, {print_avg_delay}),
-  {noreply,State#state{delay_distribution = Dict1}};
+  {noreply,State#state{delay_distribution = Dict1,delay_tuple = {0,0,0}}};
 
 handle_command({vnode_remote_delay_stats},_From,State=#state{delay_distribution = Dict})->
         lists:foreach(fun(Id) ->
@@ -729,7 +730,7 @@ handle_command({stable_label,Label,Sender_Dc_Id},_From,State=#state{label_data_s
                                          Delay_Tuple1=case Delay>0 of
                                               true->
                                                 {Sum_Time+TimeNow,Sum_Delay+Delay,Count+1};
-                                              _   ->Delay_Tuple1
+                                              _   ->{Sum_Time, Sum_Delay,Count}
                                             end,
                                           Max_Remote_VV=riak_kv_vclock:get_max_vector(Label#label.vector,Remote_VV),
                                          update_vnode_stats(vnode_put, Idx, os:timestamp()),%data has been received
