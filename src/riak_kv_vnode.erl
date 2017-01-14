@@ -705,7 +705,6 @@ handle_command({print_avg_delay},_From,State=#state{ idx = _Partition,straggler_
   {noreply,State#state{delay_distribution = Dict1,delay_tuple = {0,0,0}}};
 
 handle_command({vnode_remote_delay_stats},_From,State=#state{delay_distribution = Dict,idx = Partition})->
-        Ordered_Dict = orddict:new(),
         lists:foreach(fun(Id) ->
                  Avg_Delay=  dict:fetch(Id,Dict),
 
