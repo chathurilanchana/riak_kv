@@ -567,7 +567,7 @@ init([Index]) ->
                            md_cache=MDCache,
                            md_cache_size=MDCacheSize},
             try_set_vnode_lock_limit(Index),
-            riak_core_vnode:send_command_after(180000, {check_straggler}),
+            riak_core_vnode:send_command_after(300000, {check_straggler}),
             riak_core_vnode:send_command_after(Straggler_Print_Avg_Time, {print_avg_delay}),
             case AsyncFolding of
                 true ->
@@ -705,8 +705,10 @@ handle_command({print_avg_delay},_From,State=#state{ idx = _Partition,straggler_
   {noreply,State#state{delay_distribution = Dict1,delay_tuple = {0,0,0}}};
 
 handle_command({vnode_remote_delay_stats},_From,State=#state{delay_distribution = Dict,idx = Partition})->
+        Ordered_Dict = orddict:new(),
         lists:foreach(fun(Id) ->
                  Avg_Delay=  dict:fetch(Id,Dict),
+
                  lager:info("partition is ~p key is ~p ms count is ~p ~n",[Partition,Id,Avg_Delay])
                 end, dict:fetch_keys(Dict)),
          {noreply,State};
