@@ -697,7 +697,7 @@ handle_command({stop_straggler},_From,State=#state{ idx = _Partition,ordering_se
 
 handle_command({print_avg_delay},_From,State=#state{ idx = _Partition,straggler_print_avg_interval = Straggler_Print_Avg_Interval,delay_distribution = Dict, delay_tuple = {Sum_Time, Sum_Delay, Count}})->
   {Average_Time, Avg_Delay}  =  case Count>0 of
-                                  true->  {Sum_Time/Count, Sum_Delay/Count} ;
+                                  true->  {Sum_Time/Count, Sum_Delay/(Count*1000)} ;
                                   _ ->{0,0}
                                 end,
   Dict1 = dict:store(Average_Time,Avg_Delay,Dict),
