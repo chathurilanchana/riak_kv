@@ -635,6 +635,7 @@ handle_command({heartbeat},_From,State=#state{max_ts = MaxTS, idx = Partition,
     Physical_Time=riak_kv_util:get_timestamp(),
     Clock=max(Physical_Time,MaxTS),
 
+
   Labels_To_Deliver1= case In_Straggling_Mode of
                       true -> lager:info("holding labels"),
                               Labels_To_Deliver;
