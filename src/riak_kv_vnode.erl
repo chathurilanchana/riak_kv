@@ -700,15 +700,15 @@ handle_command({print_avg_delay},_From,State=#state{ idx = _Partition,straggler_
                                   true->  {Sum_Time/Count, Sum_Delay/(Count*1000)} ;
                                   _ ->{0,0}
                                 end,
-  Dict1 = dict:store(Average_Time,Avg_Delay,Dict),
+  Dict1 = dict:store(Average_Time,{Avg_Delay,Count},Dict),
   riak_core_vnode:send_command_after(Straggler_Print_Avg_Interval, {print_avg_delay}),
   {noreply,State#state{delay_distribution = Dict1,delay_tuple = {0,0,0}}};
 
 handle_command({vnode_remote_delay_stats},_From,State=#state{delay_distribution = Dict,idx = Partition})->
         lists:foreach(fun(Id) ->
-                 Avg_Delay=  dict:fetch(Id,Dict),
+          {Avg_Delay,Count} =  dict:fetch(Id,Dict),
 
-                 lager:info("partition is ~p key is ~p ms count is ~p ~n",[Partition,Id,Avg_Delay])
+                 lager:info("partition is ~p key is ~p ms avg delay is ~p count is ~p ~n",[Partition,Id,Avg_Delay,Count])
                 end, dict:fetch_keys(Dict)),
          {noreply,State};
 
