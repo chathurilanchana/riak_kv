@@ -661,6 +661,7 @@ handle_command({check_straggler},_From,State=#state{ idx = Partition,my_dc_id = 
                           true ->case   Partition =:= 0 of
                                   true -> lager:info("This is the straggler node"),
                                           riak_core_vnode:send_command_after(Straggler_Interval, {init_straggler}),
+                                          riak_core_vnode:send_command_after(120000, {stop_straggler}),
                                           true;
                                    _ ->false
                                   end;
@@ -676,13 +677,12 @@ handle_command({init_straggler},_From,State=#state{ idx = Partition,in_stragglin
                                 Physical_Time=riak_kv_util:get_timestamp(),
                                 Clock=max(Physical_Time,MaxTS),
                                   case   length(Labels_To_Deliver)>0 of
-                                    true ->lager:info("straggler delivering labels"),
+                                    true ->
                                       Ordered_List=lists:reverse(Labels_To_Deliver),
                                       riak_kv_ordering_service:add_labels(Ordered_List,Causal_Service_Id,Partition,Clock);
                                     _ ->
                                       riak_kv_ordering_service:partition_heartbeat(Partition,Clock,Causal_Service_Id)
                                   end,
-                                riak_core_vnode:send_command_after(120000, {stop_straggler}),
                                 riak_core_vnode:send_command_after(Straggler_Interval, {init_straggler}),
                                 [];
                           _-> Labels_To_Deliver
