@@ -727,7 +727,6 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
 
   case In_Straggling_Mode of
     true ->
-      lager:info("sleeping"),
       timer:sleep(Straggling_Time);
     _ ->
       noop
