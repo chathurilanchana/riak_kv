@@ -141,14 +141,15 @@
 
 -record(state, {idx :: partition(),
                 causal_service_reg_name::atom(),
+                delay_tuple,
                 ord_service_remote_receiver,
                 ordering_service_hb_freq::non_neg_integer(),
                 receivers,
                 dc_vector,
                 delay_distribution,
-                max_visibility_delay::non_neg_integer(),
-                sum_visibility_delay::non_neg_integer(),
-                sum_delayed_remote_writes::non_neg_integer(),
+                in_straggling_mode,
+                straggler_print_avg_interval::non_neg_integer(),
+                straggler_straggling_interval::non_neg_integer(),
                 label_data_storage,
                 my_dc_id::non_neg_integer(),
                 mod :: module(),
@@ -237,6 +238,8 @@ print_vnode_remote_delay_statistics()->
   lists:foreach(fun(PrefList) ->
     riak_core_vnode_master:command(PrefList, {vnode_remote_delay_stats}, {fsm, undefined, self()}, riak_kv_vnode_master)
                 end, GrossPrefLists).
+
+
 
 -spec maybe_create_hashtrees(state()) -> state().
 maybe_create_hashtrees(State) ->
@@ -532,17 +535,20 @@ init([Index]) ->
 
             Total_DC_Count=app_helper:get_env(riak_kv,ordering_service_total_dcs),
             DC_Vector=getInitVector(My_DC_Id,Total_DC_Count,dict:new()),
+            Straggler_Print_Avg_Time = app_helper:get_env(riak_kv, straggler_print_avg_time),
+            Straggler_Straggling_Time = app_helper:get_env(riak_kv, straggler_straggling_time),
 
             State = #state{idx=Index,
                            causal_service_reg_name = Causal_Service_Name,
                            ord_service_remote_receiver = Ordering_Service_Remote_Receiver,
                            ordering_service_hb_freq = Ordering_Service_Hb_Freq,
+                           straggler_print_avg_interval = Straggler_Print_Avg_Time,
+                           straggler_straggling_interval = Straggler_Straggling_Time,
+                           in_straggling_mode = false,
                            my_dc_id = My_DC_Id,
                            dc_vector =DC_Vector,
-                            delay_distribution = dict:new(),
-                            max_visibility_delay = 0,
-                            sum_visibility_delay = 0,
-                            sum_delayed_remote_writes=0,
+                           delay_distribution = dict:new(),
+                            delay_tuple = {0,0,0},
                            label_data_storage = dict:new(),
                            async_folding=AsyncFolding,
                            mod=Mod,
@@ -559,6 +565,8 @@ init([Index]) ->
                            md_cache=MDCache,
                            md_cache_size=MDCacheSize},
             try_set_vnode_lock_limit(Index),
+            riak_core_vnode:send_command_after(300000, {check_straggler}),
+            riak_core_vnode:send_command_after(Straggler_Print_Avg_Time, {print_avg_delay}),
             case AsyncFolding of
                 true ->
                     %% Create worker pool initialization tuple
@@ -620,17 +628,43 @@ handle_command({set_receivers, Receivers}, _From, S0) ->
   lager:info("VNODE RECEIVED RECEIVERS ~p ~n",[Receivers]),
   {reply, ok, S0#state{receivers=Receivers}};
 
+%create straggler on dc2's partition id 0
+handle_command({check_straggler},_From,State=#state{ idx = Partition,my_dc_id = My_Dc_Id})->
+  In_Straggling_Mode = case My_Dc_Id =:= 3 of
+                         true ->case   Partition =:= 0 of
+                                  true -> lager:info("This is the straggler node"),
+                                    riak_core_vnode:send_command_after(120000, {stop_straggler}),
+                                    true;
+                                  _ ->false
+                                end;
+                         _->   false
+                       end,
+  {noreply,State#state{in_straggling_mode  = In_Straggling_Mode}};
 
-handle_command({vnode_remote_delay_stats},_From,State=#state{delay_distribution = Dict})->
+handle_command({stop_straggler},_From,State=#state{ idx = _Partition})->
+  lager:info("stop straggler called"),
+  {noreply,State#state{in_straggling_mode = false}};
 
-        lists:foreach(fun(Id) ->
-                 Delay_Count=  dict:fetch(Id,Dict),
-                 lager:info("key is ~p ms count is ~p ~n",[Id*5,Delay_Count])
+handle_command({print_avg_delay},_From,State=#state{ idx = _Partition,straggler_print_avg_interval = Straggler_Print_Avg_Interval,delay_distribution = Dict, delay_tuple = {Sum_Time, Sum_Delay, Count}})->
+  {Average_Time, Avg_Delay}  =  case Count>0 of
+                                  true->  {Sum_Time/Count, Sum_Delay/(Count*1000)} ;
+                                  _ ->{0,0}
+                                end,
+  Dict1 = dict:store(Average_Time,{Avg_Delay,Count},Dict),
+  riak_core_vnode:send_command_after(Straggler_Print_Avg_Interval, {print_avg_delay}),
+  {noreply,State#state{delay_distribution = Dict1,delay_tuple = {0,0,0}}};
+
+
+handle_command({vnode_remote_delay_stats},_From,State=#state{delay_distribution = Dict,idx = Partition})->
+  lists:foreach(fun(Id) ->
+    {Avg_Delay,Count} =  dict:fetch(Id,Dict),
+
+    lager:info("partition is ~p key is ~p ms avg delay is ~p count is ~p ~n",[Partition,Id,Avg_Delay,Count])
                 end, dict:fetch_keys(Dict)),
-         {noreply,State};
+  {noreply,State};
 
 %when receives a label, check whether data is available, if so apply it and update the vector, otherwise wait for data
-handle_command({stable_label,Label,Sender_Dc_Id},_From,State=#state{label_data_storage = Label_Data_storage,idx = Idx,dc_vector = Remote_VV, ord_service_remote_receiver = Ordering_Service_Remote_receiver, delay_distribution = Dict})->
+handle_command({stable_label,Label,Sender_Dc_Id},_From,State=#state{label_data_storage = Label_Data_storage,idx = Idx,dc_vector = Remote_VV, ord_service_remote_receiver = Ordering_Service_Remote_receiver,delay_tuple = {Sum_Time, Sum_Delay,Count}})->
   %lager:info("label received, waiting for data ~p",[Label#label.timestamp]),
   {_Bucket,Key}=Label#label.bkey,
   <<Integer_Key:32/big>>=Key,
@@ -642,26 +676,16 @@ handle_command({stable_label,Label,Sender_Dc_Id},_From,State=#state{label_data_s
                                         {_Reply, UpdState} = do_remote_put(Label#label.bkey,  Object, StartTime, Options, State),
                                         riak_kv_remote_os:remote_label_applied_by_vnode(Ordering_Service_Remote_receiver),
                                         Data_Receive_Time=Data#remote_received_data.received_time,
-                                        Delay=riak_kv_util:get_timestamp()-Data_Receive_Time,
-                                        Dict1=case Delay>0 of
-                                                                             true->
-                                                                               Rem=Delay div 5000,%convert delay to ms,and 5ms range
-
-                                                                               Rem1=case Rem>100 of
-                                                                                      true->100;
-                                                                                      _   ->Rem
-                                                                                    end,
-
-                                                                               DictNew=case dict:find(Rem1,Dict) of
-                                                                                         {ok,Value}->dict:store(Rem1,Value+1,Dict);
-                                                                                         error->dict:store(Rem1,1,Dict)
-                                                                                       end,
-                                                                               DictNew;
-                                                                             _   ->Dict
-                                                                           end,
+                                        TimeNow = riak_kv_util:get_timestamp(),
+                                        Delay= TimeNow-Data_Receive_Time,
+                                        Delay_Tuple1=case Delay>0 of
+                                                     true->
+                                                       {Sum_Time+TimeNow,Sum_Delay+Delay,Count+1};
+                                                     _   ->{Sum_Time, Sum_Delay,Count}
+                                                   end,
                                          Max_Remote_VV=riak_kv_vclock:get_max_vector(Label#label.vector,Remote_VV),
                                          update_vnode_stats(vnode_put, Idx, os:timestamp()),%data has been received
-                                        {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector = Max_Remote_VV,delay_distribution = Dict1}};
+                                        {dict:erase(Label_Data_Key,Label_Data_storage),UpdState#state{dc_vector = Max_Remote_VV,delay_tuple = Delay_Tuple1}};
                                       _  ->
                                           %lager:info("cant apply data at vnode, waiting for data ~p",[Label#label.timestamp]),
                                          {dict:store(Label_Data_Key,Label#label.vector,Label_Data_storage),State}
@@ -695,11 +719,20 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
                            req_id=ReqId,
                            start_time=_StartTime,
                            options=Options},
-               Sender, State=#state{idx=Idx,causal_service_reg_name =Causal_Service_Id,receivers = Receivers,my_dc_id = My_Dc_Id,dc_vector = DC_Vector}) ->
+               Sender, State=#state{idx=Idx,causal_service_reg_name =Causal_Service_Id,receivers = Receivers,my_dc_id = My_Dc_Id,dc_vector = DC_Vector,in_straggling_mode  = In_Straggling_Mode, straggler_straggling_interval = Straggling_Time}) ->
     StartTS = os:timestamp(),
 
   %propagate labels to the ordering service
   Label=riak_kv_causal_service_util:create_label(BKey,CVector),
+
+  case In_Straggling_Mode of
+    true ->
+      lager:info("sleeping"),
+      timer:sleep(Straggling_Time);
+    _ ->
+      noop
+  end,
+
   {ok,SeqNumber}=riak_kv_ordering_service:add_label(Label,Causal_Service_Id,Idx),
 
     Max_Dc_Vector=riak_kv_vclock:get_max_vector(DC_Vector,CVector) , %if client clock is higher, update vnode clock

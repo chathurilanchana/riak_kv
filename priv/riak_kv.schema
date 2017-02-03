@@ -676,6 +676,16 @@ end
     {default, 10}
 ]}.
 
+{mapping, "straggler_print_avg_time", "riak_kv.straggler_print_avg_time", [
+    {datatype, integer},
+    {default, 100}
+]}.
+
+{mapping, "straggler_straggling_time", "riak_kv.straggler_straggling_time", [
+    {datatype, integer},
+    {default, 1000}
+]}.
+
 {mapping, "ordering_service_total_dcs", "riak_kv.ordering_service_total_dcs", [
     {datatype, integer},
     {default, 3}
