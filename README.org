@@ -16,7 +16,7 @@ Then on each datacenter you need to run the below processes. Start these service
    2) riak_kv_sup:start_ordering_service()
    3) riak_kv_sup: start_remote_label_receiver()
    
-  ** Major Changes to Original riak_Kv
+** Major Changes to Original riak_Kv
   Below list indicate the major changes to the riak_kv
    1)riak_kv_vnode.erl  (Modified to send labels and heartbeats to eunomia, propagate data to the remote data centers, receive data from remote datacenters and apply them when causality is satisfied)
    2)riak_kv_ordering_service.erl (This is the Eunomia service explained in the paper. Responsible for receiving heartbeats and labels from its own datacenter, stabilise them and deliver the stabilised labels to the remote datacenters once stablilsed)
