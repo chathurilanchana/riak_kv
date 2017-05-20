@@ -23,7 +23,7 @@ Then on each datacenter you need to run the below processes. Start these service
    3) riak_kv_remote_os.erl (responsible for receiving stabilised labels from the remote eunomia services and notify its own dc vnodes when the remote updates are ready to be installed
    4) riak_kv_data_propergator.erl and riak_kv_receiver_perdc.erl (As the open source version of riak does not have the multidc support, we modified riak_kv to support multidc. propagator is responsible for receiving the data from reomte vnode and sending them to the responsible vnode in its own dc. For better load balancing we have one propagator per each node in dc and vnode select a random propagator from each remote dc. receiver is responslibe for receiving the remote propagator list and notifying the list of propagators to the vnodes.
    
- ** Note
+   **  Note
  I have updated the riak_kv.schema to include few more variables that I use in the code. These will be added to the etc/riak.config once you build the source. You may need to update their values according to your cluster
  
  In order to perform the experiments I used modified version of basho bench riakclient https://github.com/chathurilanchana/basho_bench/blob/causal-dev/src/basho_bench_driver_riakclient.erl. In order to use this, you will have to update https://github.com/chathurilanchana/basho_bench/blob/causal-dev/examples/riakclient.config according to your cluster
