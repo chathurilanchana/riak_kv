@@ -12,9 +12,9 @@ In this paper we propose a novel approach to manage the throughput vs latency tr
 ** Start
 Start each datacenter individualy in the way explained in http://docs.basho.com/riak/kv/2.2.3/using/running-a-cluster/
 Then on each datacenter you need to run the below processes. Start these services on different nodes of the same dc for efficiency.
-   1) riak_kv_sup: start_receiver();
-   2) riak_kv_sup:start_ordering_service();
-   3) riak_kv_sup: start_remote_label_receiver();
+   1) riak_kv_sup: start_receiver()
+   2) riak_kv_sup:start_ordering_service()
+   3) riak_kv_sup: start_remote_label_receiver()
    
   ** Major Changes to Original riak_Kv
    1)riak_kv_vnode.erl  (Modified to send labels and heartbeats to eunomia, propagate data to the remote data centers, receive data from remote datacenters and apply them when causality is satisfied)
