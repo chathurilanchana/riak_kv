@@ -90,11 +90,9 @@ handle_call(_Request, _From, State) ->
 
 %check whether anything is deliverable in list
 handle_cast({vnode_applied},State=#state{my_dc_id = My_Id,remote_vector = My_Vclock,unsatisfied_queues = Pendings,remote_applied = Remote_Applied})->
-  %lager:info("*******vnode reply received ~n******"),
   {Pendings1,My_Vclock1,ShouldWait}=process_unsatisfied_remote_labels(My_Vclock,My_Id,Pendings),
 {noreply,State#state{remote_vector = My_Vclock1,unsatisfied_queues = Pendings1,waiting_for_vnode_reply = ShouldWait,remote_applied = Remote_Applied+1}};
 
-%#dcs>3, otherwise we dont need any blocking.
 handle_cast({remote_labels,Batch_To_Deliver,Sender_Dc_Id},State=#state{remote_vector = My_VClock, unsatisfied_queues = Pendings,my_dc_id = My_Id,waiting_for_vnode_reply = ShouldWait})->
       {Head, Tail, PendingOps_Table} = dict:fetch(Sender_Dc_Id, Pendings),
       Tail1=insert_remote_labels_to_queue(Batch_To_Deliver,Tail,PendingOps_Table),
@@ -178,19 +176,10 @@ deliver_head_label_to_vnode(Label,My_VClock,Sender_Dc_Id,My_Id)->
               PrefList = riak_core_apl:get_primary_apl(DocIdx, 1,riak_kv),
               [{IndexNode, _Type}] = PrefList,
               riak_kv_vnode:deliver_stable_label(Label1,Sender_Dc_Id,IndexNode),
-
-              %wait_for_response(),
               {Max_VClock,true };
 
             _ ->{My_VClock,false}   %labels from receiver are in order, if first is not deliverable, then we cant deliver all the rest
     end.
-
-%wait_for_response()->
- %   receive
-  %     ok ->ok
-   %  after 5000 ->
-    %    lager:info("*****TIMEOUT OCCURED AFTER SENDING A REMOTE LABEL TO A VNODE*********")
-    %end.
 
 process_unsatisfied_remote_labels(My_Vclock,My_Id,Pending_Queues)->
    Dc_List=dict:fetch_keys(Pending_Queues),
@@ -202,10 +191,6 @@ apply_possible_labels([],Pending_Queues,My_Vclock,_My_Id)->
 apply_possible_labels([Head_DC|Rest],Pending_Queues,My_Vclock,My_Id)->
   {Head, Tail, PendingOps_Table}= dict:fetch(Head_DC, Pending_Queues),
 
-  case Head=:=Tail of
-     true-> Pending_Queues1 = dict:store(Head_DC, {0, 0, PendingOps_Table}, Pending_Queues),
-           {Pending_Queues1,My_Vclock,false};
-      _ ->
   case ets:lookup(PendingOps_Table, Head) of
               [{Head,Label}]->{Clock,IsDeliverable}= deliver_head_label_to_vnode(Label,My_Vclock,Head_DC,My_Id),
                 case IsDeliverable of
@@ -215,6 +200,5 @@ apply_possible_labels([Head_DC|Rest],Pending_Queues,My_Vclock,My_Id)->
                   _ -> apply_possible_labels(Rest,Pending_Queues,My_Vclock,My_Id)
                 end;
               _ ->apply_possible_labels(Rest,Pending_Queues,My_Vclock,My_Id)
-            end
    end.
 
